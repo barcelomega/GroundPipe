@@ -9,7 +9,7 @@ GroundPipe is an unofficial Android music player for the [Newgrounds Audio Porta
 ## Features
 
 - **Discover:** browse Featured, Latest, and Popular audio; filter by genre and search tracks.
-- **Recommendations:** get suggestions based on your listening library.
+- **Recommendations:** implemented experimental recommendation system that looks through faves of artist you liked and sorts those based on how many tracks of these artists you liked divided by sqrt count of their faves.
 - **Timeline:** browse recent music from artists you follow in the app.
 - **Player:** stream audio, control playback from the mini-player or full-screen player, and continue listening in the background.
 - **Library:** save tracks to Likes, create local playlists, and cache tracks and artwork for offline access.
