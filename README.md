@@ -47,3 +47,7 @@ flutter test
 ## Notes
 
 GroundPipe is not affiliated with or endorsed by Newgrounds. Music and other content remain the property of their respective creators and rights holders. Please follow Newgrounds' terms and each creator's licensing requirements.
+
+## License
+
+Distributed under the [MIT License](LICENSE).
