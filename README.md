@@ -1,8 +1,6 @@
-# NGMusic
+# GroundPipe
 
-<img width="2160" height="1080" alt="GroundPipe app screenshot" src="https://github.com/user-attachments/assets/f5e87fbb-d0d5-4ec7-bf84-a9e9bb164cc1" />
-
-GroundPipe is an unofficial Android music player for the [Newgrounds Audio Portal](https://www.newgrounds.com/audio). It browses Newgrounds audio and streams tracks directly from Newgrounds and its audio CDN.
+GroundPipe is an unofficial Android music player for the [Newgrounds Audio Portal](https://www.newgrounds.com/audio). It browses Newgrounds audio and streams tracks directly from Newgrounds and its CDN.
 
 ## Features
 
@@ -13,6 +11,7 @@ GroundPipe is an unofficial Android music player for the [Newgrounds Audio Porta
 - **Library:** save tracks to Likes, create local playlists, and cache tracks and artwork for offline access.
 - **Artist pages:** explore tracks by Newgrounds artists.
 - **Track details:** view Newgrounds metadata and open recommended tracks.
+- **All data local:** doesn't requires Newgrounds account for recommendations, playlist and all other features to work.
 
 GroundPipe is an independent client, not an official Newgrounds app. Newgrounds pages are fetched and parsed by the app; audio playback uses the URLs provided by Newgrounds.
 
