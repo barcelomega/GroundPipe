@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.g2961.ngmusic"
+    namespace = "com.barcelomega.groundpipe"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -14,7 +14,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.g2961.ngmusic"
+        applicationId = "com.barcelomega.groundpipe"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

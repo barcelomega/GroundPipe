@@ -1,266 +1,199 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../../data/model/playlist.dart';
 import '../../data/model/track.dart';
 import '../../viewmodel/library_viewmodel.dart';
-import '../theme/ng_theme.dart';
-import 'ng_chrome.dart';
-import 'ng_playlist_dialogs.dart';
-import 'ng_retro.dart';
 
-const _skin = NgSkin.gold;
-
-Future<void> showAddToPlaylistSheet(BuildContext context, Track track) {
-  return showModalBottomSheet(
+/// Shows a bottom sheet to select a playlist for adding tracks.
+/// Returns the selected playlist, or null if cancelled.
+Future<Playlist?> showAddToPlaylistSheet(
+  BuildContext context, {
+  required List<Track> tracks,
+  required LibraryViewModel lvm,
+}) async {
+  return showModalBottomSheet<Playlist>(
     context: context,
-    backgroundColor: Colors.transparent,
-    barrierColor: ngBlack.withValues(alpha: 0.72),
-    shape: const RoundedRectangleBorder(),
+    showDragHandle: true,
     isScrollControlled: true,
-    builder: (_) => ChangeNotifierProvider.value(
-      value: context.read<LibraryViewModel>(),
-      child: _AddToPlaylistSheet(track: track),
-    ),
+    useSafeArea: true,
+    builder: (ctx) => _AddToPlaylistSheet(tracks: tracks, lvm: lvm),
   );
 }
 
 class _AddToPlaylistSheet extends StatefulWidget {
-  final Track track;
-  const _AddToPlaylistSheet({required this.track});
+  final List<Track> tracks;
+  final LibraryViewModel lvm;
+
+  const _AddToPlaylistSheet({required this.tracks, required this.lvm});
 
   @override
   State<_AddToPlaylistSheet> createState() => _AddToPlaylistSheetState();
 }
 
 class _AddToPlaylistSheetState extends State<_AddToPlaylistSheet> {
-  final _search = TextEditingController();
-  int _tab = 0;
-  String _query = '';
-
-  int? _busyId;
+  bool _creating = false;
+  bool _isCreatingPlaylist = false;
+  String? _createError;
+  final _nameController = TextEditingController();
 
   @override
   void dispose() {
-    _search.dispose();
+    _nameController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final lvm = context.watch<LibraryViewModel>();
-    final local = _filter(lvm.localPlaylists);
-    final ng = _filter(lvm.ngPlaylists);
-    final list = _tab == 0 ? local : ng;
+    final playlists = widget.lvm.playlists;
+    final colorScheme = Theme.of(context).colorScheme;
 
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final availableHeight = MediaQuery.of(context).size.height - bottomInset;
+
+    return SafeArea(
       child: SizedBox(
-        height: MediaQuery.of(context).size.height * 0.62,
-        child: Column(
-          children: [
-            NgNavPlates(
-              labels: ['This app (${local.length})', 'Newgrounds (${ng.length})'],
-              index: _tab,
-              onSelect: (i) => setState(() => _tab = i),
-              accents: const [NgAccent.blue, NgAccent.orange],
-            ),
-            Expanded(
-              child: NgPageColumn(
-                child: NgPod.fill(
-                  icon: 'list',
-                  title: 'Add to Playlist',
-                  skin: _skin,
-                  action: NgPlateLink(
-                    label: '+ Playlist »',
-                    onTap: () => _create(lvm),
-                  ),
+        height: availableHeight * 0.8,
+        child: Padding(
+          padding: EdgeInsets.only(bottom: bottomInset),
+          child: Column(
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: Text(
+                  widget.tracks.length == 1
+                      ? 'Add to Playlist'
+                      : 'Add ${widget.tracks.length} tracks to Playlist',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+
+              // Create new playlist
+              if (_creating)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(6, 6, 6, 6),
-                        child: NgTextField(
-                          controller: _search,
-                          hint: 'Filter playlists',
-                          onChanged: (v) => setState(() => _query = v),
-                          suffix: _query.isEmpty
-                              ? null
-                              : NgIconButton(
-                                  icon: 'close',
-                                  padding: 4,
-                                  onTap: () {
-                                    _search.clear();
-                                    setState(() => _query = '');
-                                  },
-                                ),
+                      TextField(
+                        controller: _nameController,
+                        autofocus: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Playlist name',
+                          border: OutlineInputBorder(),
                         ),
+                        onSubmitted: (_) => _createAndSelect(),
                       ),
-                      Expanded(child: _list(lvm, list)),
+                      if (_createError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          _createError!,
+                          style: TextStyle(color: colorScheme.error),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () =>
+                                  setState(() => _creating = false),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: FilledButton.icon(
+                              onPressed:
+                                  _isCreatingPlaylist ? null : _createAndSelect,
+                              icon: _isCreatingPlaylist
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.add),
+                              label: Text(_isCreatingPlaylist
+                                  ? 'Creating...'
+                                  : 'Create'),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  List<Playlist> _filter(List<Playlist> src) {
-    final q = _query.trim().toLowerCase();
-    if (q.isEmpty) return src;
-    return src.where((p) => p.name.toLowerCase().contains(q)).toList();
-  }
-
-  Widget _list(LibraryViewModel lvm, List<Playlist> list) {
-    if (lvm.isLoading && lvm.playlists.isEmpty) {
-      return const SingleChildScrollView(child: NgLoading());
-    }
-    if (_tab == 1 && !lvm.isLoggedIn) {
-      return const SingleChildScrollView(
-        child: NgNotice(
-          text: 'Log in to use playlists\non your Newgrounds account.',
-          icon: 'user',
-        ),
-      );
-    }
-    if (list.isEmpty) {
-      return SingleChildScrollView(
-        child: NgNotice(
-          text: _query.isNotEmpty
-              ? 'Nothing matches "$_query".'
-              : (_tab == 0
-                  ? 'No playlists in the app yet.'
-                  : 'No playlists on your NG account yet.'),
-          icon: _query.isNotEmpty ? 'search' : 'folder',
-          action: _query.isNotEmpty
-              ? null
-              : NgButton(
-                  label: 'New Playlist',
-                  icon: 'add',
-                  onPressed: () => _create(lvm),
-                ),
-        ),
-      );
-    }
-    return ListView.builder(
-      padding: EdgeInsets.zero,
-      itemCount: list.length,
-      itemBuilder: (_, i) => _PlaylistPickRow(
-        index: i,
-        playlist: list[i],
-        busy: _busyId == list[i].id,
-        locked: _busyId != null && _busyId != list[i].id,
-        onTap: () => _add(lvm, list[i]),
-      ),
-    );
-  }
-
-  Future<void> _add(LibraryViewModel lvm, Playlist pl) async {
-    if (_busyId != null) return;
-    setState(() => _busyId = pl.id);
-    final ok = await lvm.addTrackToPlaylist(pl, widget.track);
-    if (!mounted) return;
-    setState(() => _busyId = null);
-    if (ok) {
-      Navigator.pop(context);
-      _snack(context, 'Added to "${pl.name}"');
-      return;
-    }
-    final error = lvm.lastError;
-    lvm.clearError();
-    _snack(context, error ?? 'Could not add the track', ok: false);
-  }
-
-  Future<void> _create(LibraryViewModel lvm) async {
-    final result = await showNgCreatePlaylistDialog(
-      context,
-      canUseNg: lvm.isLoggedIn,
-      target: _tab == 1 ? PlaylistTarget.newgrounds : PlaylistTarget.local,
-      skin: _skin,
-    );
-    if (result == null || !mounted) return;
-
-    setState(() => _busyId = -1);
-    final pl = await lvm.createPlaylistWithTrack(
-      result.name,
-      target: result.target,
-      track: widget.track,
-    );
-    if (!mounted) return;
-    setState(() => _busyId = null);
-    if (pl != null) {
-      Navigator.pop(context);
-      _snack(context, 'Created "${result.name}" and added the track');
-      return;
-    }
-    final error = lvm.lastError;
-    lvm.clearError();
-    _snack(context, error ?? 'Could not create the playlist', ok: false);
-  }
-
-  void _snack(BuildContext context, String text, {bool ok = true}) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(text, style: TextStyle(color: ngWhite, fontSize: 12)),
-      backgroundColor: ok ? ngOrange : ngRed,
-      behavior: SnackBarBehavior.floating,
-      shape: const RoundedRectangleBorder(),
-      duration: const Duration(seconds: 2),
-    ));
-  }
-}
-
-class _PlaylistPickRow extends StatelessWidget {
-  final int index;
-  final Playlist playlist;
-  final bool busy;
-  final bool locked;
-  final VoidCallback onTap;
-
-  const _PlaylistPickRow({
-    required this.index,
-    required this.playlist,
-    required this.busy,
-    required this.locked,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: locked ? 0.5 : 1,
-      child: NgListRow(
-        index: index,
-        skin: _skin,
-        onTap: locked ? null : onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
-          child: Row(
-            children: [
-              Image.asset(
-                NgTex.h2(playlist.ngId != null ? 'pico' : 'folder'),
-                width: 24,
-                height: 24,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  playlist.name,
-                  style: ngLink,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              const SizedBox(width: 6),
-              if (busy)
-                const NgLoading(compact: true, size: 20)
+                )
               else
-                Image.asset(NgTex.a15('add'), width: 15, height: 15),
+                ListTile(
+                  leading: Icon(Icons.add_circle_outline,
+                      color: colorScheme.primary),
+                  title: Text(
+                    'Create new playlist',
+                    style: TextStyle(
+                        color: colorScheme.primary,
+                        fontWeight: FontWeight.w500),
+                  ),
+                  onTap: () => setState(() => _creating = true),
+                ),
+
+              const Divider(height: 1),
+
+              // Playlist list
+              Expanded(
+                child: playlists.isEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(32),
+                          child: Text(
+                            'No playlists yet',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: playlists.length,
+                        itemBuilder: (ctx, i) => ListTile(
+                          leading: Icon(
+                            Icons.folder,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                          title: Text(playlists[i].name),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: () => Navigator.pop(context, playlists[i]),
+                        ),
+                      ),
+              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _createAndSelect() async {
+    if (_isCreatingPlaylist) return;
+    final name = _nameController.text.trim();
+    if (name.isEmpty) return;
+
+    setState(() {
+      _isCreatingPlaylist = true;
+      _createError = null;
+    });
+    try {
+      final playlist = await widget.lvm.createPlaylist(name);
+      if (mounted) Navigator.pop(context, playlist);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isCreatingPlaylist = false;
+        _createError = 'Could not create playlist. Please try again.';
+      });
+    }
   }
 }

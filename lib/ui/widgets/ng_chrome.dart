@@ -363,13 +363,13 @@ class NgNavPlate extends StatelessWidget {
           border: side
               ? Border(
                   right: BorderSide(
-                    color: accent.withValues(alpha: lineAlpha),
+                    color: accent.withOpacity(lineAlpha),
                     width: 2,
                   ),
                 )
               : Border(
                   bottom: BorderSide(
-                    color: accent.withValues(alpha: lineAlpha),
+                    color: accent.withOpacity(lineAlpha),
                     width: 2,
                   ),
                 ),
@@ -379,8 +379,8 @@ class NgNavPlate extends StatelessWidget {
                       side ? Alignment.centerLeft : Alignment.topCenter,
                   end: side ? Alignment.centerRight : Alignment.bottomCenter,
                   colors: [
-                    accent.withValues(alpha: 0.0),
-                    accent.withValues(alpha: glowAlpha),
+                    accent.withOpacity(0.0),
+                    accent.withOpacity(glowAlpha),
                   ],
                   stops: const [0.66, 1],
                 )
@@ -657,7 +657,7 @@ class _NavButton extends StatelessWidget {
             color: bg,
             border: Border(
               top: BorderSide(
-                color: accent.withValues(alpha: lineAlpha),
+                color: accent.withOpacity(lineAlpha),
                 width: 3,
               ),
               right: BorderSide(
@@ -963,7 +963,7 @@ class NgRailButton extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Container(width: 3, color: accent.withValues(alpha: selected ? 1 : 0.35)),
+            Container(width: 3, color: accent.withOpacity(selected ? 1 : 0.35)),
             Expanded(
               child: Icon(_iconFor(icon),
                   size: 22, color: selected ? ngWhite : ngDim),

@@ -1759,7 +1759,7 @@ class _OrbitDotsPainter extends CustomPainter {
       );
       final depth = 0.5 - 0.5 * math.sin(angle);
       final paint = Paint()
-        ..color = Colors.white.withValues(alpha: 0.25 + 0.75 * depth);
+        ..color = Colors.white.withOpacity(0.25 + 0.75 * depth);
       canvas.drawCircle(p, dotRadius, paint);
     }
   }

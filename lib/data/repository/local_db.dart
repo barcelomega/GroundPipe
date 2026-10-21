@@ -3,6 +3,7 @@ import 'package:path/path.dart';
 
 import '../model/playlist.dart';
 import '../model/track.dart';
+import '../model/author.dart';
 
 class LocalDb {
   static LocalDb? _instance;
@@ -20,7 +21,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'ngmusic.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 13,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('''
@@ -38,6 +39,131 @@ class LocalDb {
         if (from < 3) {
           await db.execute(
               'ALTER TABLE favorites ADD COLUMN is_ng INTEGER NOT NULL DEFAULT 0');
+        }
+        if (from < 4) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS blacklisted_tracks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              track_id TEXT NOT NULL UNIQUE,
+              blacklisted_at INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS staged_likes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              track_id TEXT NOT NULL UNIQUE,
+              title TEXT NOT NULL,
+              artist TEXT NOT NULL,
+              icon_url TEXT NOT NULL,
+              duration INTEGER DEFAULT 0,
+              genre TEXT,
+              liked_at INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS cached_tracks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              track_id TEXT NOT NULL UNIQUE,
+              local_path TEXT NOT NULL,
+              cached_at INTEGER NOT NULL,
+              size INTEGER DEFAULT 0
+            )
+          ''');
+        }
+        if (from < 5) {
+          // Add position column if it doesn't exist
+          await db.execute('''
+            ALTER TABLE playlist_tracks ADD COLUMN position INTEGER DEFAULT 0
+          ''').catchError((_) {
+            // Column already exists, ignore error
+          });
+        }
+        if (from < 6) {
+          // Extend cached_tracks with full metadata
+          await db.execute('DROP TABLE IF EXISTS cached_tracks');
+          await db.execute('''
+            CREATE TABLE cached_tracks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              track_id TEXT NOT NULL UNIQUE,
+              title TEXT NOT NULL,
+              artist TEXT NOT NULL,
+              genre TEXT,
+              icon_url TEXT NOT NULL,
+              duration INTEGER DEFAULT 0,
+              audio_type INTEGER DEFAULT 3,
+              score TEXT,
+              author_url TEXT,
+              local_path TEXT NOT NULL,
+              cached_at INTEGER NOT NULL,
+              size INTEGER DEFAULT 0
+            )
+          ''');
+        }
+        if (from < 7) {
+          // Extend blacklisted_tracks with just title
+          await db.execute('DROP TABLE IF EXISTS blacklisted_tracks');
+          await db.execute('''
+            CREATE TABLE blacklisted_tracks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              track_id TEXT NOT NULL UNIQUE,
+              title TEXT,
+              blacklisted_at INTEGER NOT NULL
+            )
+          ''');
+        }
+        if (from < 8) {
+          // Version 7 fresh installs still used the original cache schema.
+          final columns = await db.rawQuery('PRAGMA table_info(cached_tracks)');
+          final names = columns.map((row) => row['name']).toSet();
+          const metadata = {
+            'title': "TEXT NOT NULL DEFAULT ''",
+            'artist': "TEXT NOT NULL DEFAULT ''",
+            'genre': 'TEXT',
+            'icon_url': "TEXT NOT NULL DEFAULT ''",
+            'duration': 'INTEGER DEFAULT 0',
+            'audio_type': 'INTEGER DEFAULT 3',
+            'score': 'TEXT',
+            'author_url': 'TEXT',
+          };
+          for (final column in metadata.entries) {
+            if (!names.contains(column.key)) {
+              await db.execute(
+                'ALTER TABLE cached_tracks ADD COLUMN ${column.key} ${column.value}',
+              );
+            }
+          }
+        }
+        if (from < 9) {
+          await db.execute(_authorPreferencesTable);
+        }
+        if (from < 10) {
+          await db.execute(_trackGenresTable);
+        }
+        if (from < 11) {
+          // Add title column to blacklisted_tracks for v10 fresh installs
+          await db.execute('''
+            ALTER TABLE blacklisted_tracks ADD COLUMN title TEXT
+          ''').catchError((_) {
+            // Column already exists, ignore
+          });
+        }
+        if (from < 12) {
+          final columns = await db.rawQuery('PRAGMA table_info(staged_likes)');
+          if (!columns.any((row) => row['name'] == 'author_url')) {
+            await db
+                .execute('ALTER TABLE staged_likes ADD COLUMN author_url TEXT');
+          }
+          await db.execute(_recommendationFavoritesTable);
+          await db.execute(_recommendationAuthorStateTable);
+          await db.execute(_recommendationScoresTable);
+        }
+        if (from < 13) {
+          final columns =
+              await db.rawQuery('PRAGMA table_info(playlist_tracks)');
+          if (!columns.any((row) => row['name'] == 'author_url')) {
+            await db.execute(
+                'ALTER TABLE playlist_tracks ADD COLUMN author_url TEXT');
+          }
         }
       },
       onCreate: (db, _) async {
@@ -57,6 +183,7 @@ class LocalDb {
             track_id TEXT NOT NULL,
             title TEXT NOT NULL,
             artist TEXT NOT NULL,
+            author_url TEXT,
             icon_url TEXT NOT NULL,
             duration INTEGER DEFAULT 0,
             genre TEXT,
@@ -80,7 +207,50 @@ class LocalDb {
             is_ng INTEGER NOT NULL DEFAULT 0
           )
         ''');
+        await db.execute('''
+          CREATE TABLE blacklisted_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT NOT NULL UNIQUE,
+            title TEXT,
+            blacklisted_at INTEGER NOT NULL
+          )
+        ''');
+        await db.execute('''
+          CREATE TABLE staged_likes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            author_url TEXT,
+            icon_url TEXT NOT NULL,
+            duration INTEGER DEFAULT 0,
+            genre TEXT,
+            liked_at INTEGER NOT NULL
+          )
+        ''');
+        await db.execute('''
+          CREATE TABLE cached_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            genre TEXT,
+            icon_url TEXT NOT NULL,
+            duration INTEGER DEFAULT 0,
+            audio_type INTEGER DEFAULT 3,
+            score TEXT,
+            author_url TEXT,
+            local_path TEXT NOT NULL,
+            cached_at INTEGER NOT NULL,
+            size INTEGER DEFAULT 0
+          )
+        ''');
         await db.execute(_ngIdIndex);
+        await db.execute(_authorPreferencesTable);
+        await db.execute(_trackGenresTable);
+        await db.execute(_recommendationFavoritesTable);
+        await db.execute(_recommendationAuthorStateTable);
+        await db.execute(_recommendationScoresTable);
       },
     );
   }
@@ -89,6 +259,180 @@ class LocalDb {
       'CREATE UNIQUE INDEX IF NOT EXISTS idx_playlists_ng_id '
       'ON playlists(ng_id)';
 
+  static const _authorPreferencesTable = '''
+    CREATE TABLE IF NOT EXISTS author_preferences (
+      username TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      subscribed INTEGER NOT NULL DEFAULT 0,
+      blocked INTEGER NOT NULL DEFAULT 0
+    )
+  ''';
+
+  static const _trackGenresTable = '''
+    CREATE TABLE IF NOT EXISTS track_genres (
+      track_id TEXT PRIMARY KEY,
+      genre TEXT NOT NULL
+    )
+  ''';
+
+  static const _recommendationFavoritesTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_author_favorites (
+      username TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      PRIMARY KEY (username, track_id)
+    )
+  ''';
+
+  static const _recommendationScoresTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_track_scores (
+      track_id TEXT PRIMARY KEY,
+      score REAL NOT NULL
+    )
+  ''';
+
+  static const _recommendationAuthorStateTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_author_state (
+      username TEXT PRIMARY KEY,
+      next_url TEXT,
+      complete INTEGER NOT NULL DEFAULT 0
+    )
+  ''';
+
+  Future<String?> getTrackGenre(String id) async {
+    final d = await db;
+    final rows =
+        await d.query('track_genres', where: 'track_id = ?', whereArgs: [id]);
+    return rows.isEmpty ? null : rows.first['genre'] as String;
+  }
+
+  Future<void> saveTrackGenre(String id, String genre) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.insert('track_genres', {'track_id': id, 'genre': genre},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      for (final table in [
+        'playlist_tracks',
+        'staged_likes',
+        'cached_tracks',
+        'favorites'
+      ]) {
+        await txn.update(table, {'genre': genre},
+            where: 'track_id = ?', whereArgs: [id]);
+      }
+    });
+  }
+
+  Future<List<Author>> getAuthors() async {
+    final d = await db;
+    final rows =
+        await d.query('author_preferences', orderBy: 'name COLLATE NOCASE');
+    return rows.map(Author.fromMap).toList();
+  }
+
+  Future<void> saveAuthor(Author author) async {
+    final d = await db;
+    await d.insert(
+        'author_preferences',
+        {
+          'username': author.username,
+          'name': author.name,
+          'subscribed': author.subscribed ? 1 : 0,
+          'blocked': author.blocked ? 1 : 0,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<List<String>> getRecommendationFavoriteIds(String username) async {
+    final d = await db;
+    final rows = await d.query('recommendation_author_favorites',
+        columns: ['track_id'], where: 'username = ?', whereArgs: [username]);
+    return rows.map((row) => row['track_id'] as String).toList();
+  }
+
+  Future<(String?, bool)> getRecommendationAuthorState(String username) async {
+    final d = await db;
+    final rows = await d.query('recommendation_author_state',
+        where: 'username = ?', whereArgs: [username], limit: 1);
+    if (rows.isEmpty) return (null, false);
+    return (rows.first['next_url'] as String?, rows.first['complete'] == 1);
+  }
+
+  Future<void> saveRecommendationFavoritePage(
+      String username, List<String> trackIds,
+      {required String? nextUrl}) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final batch = txn.batch();
+      for (final trackId in trackIds.toSet()) {
+        batch.insert(
+            'recommendation_author_favorites',
+            {
+              'username': username,
+              'track_id': trackId,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      batch.insert(
+          'recommendation_author_state',
+          {
+            'username': username,
+            'next_url': nextUrl,
+            'complete': nextUrl == null ? 1 : 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> saveRecommendationFavoriteIds(
+      String username, List<String> trackIds) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.delete('recommendation_author_favorites',
+          where: 'username = ?', whereArgs: [username]);
+      final batch = txn.batch();
+      for (final trackId in trackIds.toSet()) {
+        batch.insert('recommendation_author_favorites', {
+          'username': username,
+          'track_id': trackId,
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> rebuildRecommendationScores(
+      Map<String, double> authorWeights) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.delete('recommendation_track_scores');
+      if (authorWeights.isEmpty) return;
+      final rows = await txn.query('recommendation_author_favorites');
+      final scores = <String, double>{};
+      for (final row in rows) {
+        final weight = authorWeights[row['username'] as String];
+        if (weight == null || weight <= 0) continue;
+        final trackId = row['track_id'] as String;
+        scores.update(trackId, (score) => score + weight,
+            ifAbsent: () => weight);
+      }
+      final batch = txn.batch();
+      for (final entry in scores.entries) {
+        batch.insert('recommendation_track_scores', {
+          'track_id': entry.key,
+          'score': entry.value,
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getRecommendationScores(
+      {int limit = 200, int offset = 0}) async {
+    final d = await db;
+    return d.query('recommendation_track_scores',
+        orderBy: 'score DESC, track_id DESC', limit: limit, offset: offset);
+  }
 
   Future<List<Playlist>> getPlaylists() async {
     final d = await db;
@@ -104,7 +448,8 @@ class LocalDb {
     return p.copyWith(id: id);
   }
 
-  Future<Playlist> createPlaylistWithNgId(String name, {required String ngId}) async {
+  Future<Playlist> createPlaylistWithNgId(String name,
+      {required String ngId}) async {
     final d = await db;
     final now = DateTime.now().millisecondsSinceEpoch;
     final p = Playlist(name: name, createdAt: now, ngId: ngId);
@@ -119,14 +464,18 @@ class LocalDb {
 
   Future<void> renamePlaylist(int id, String name) async {
     final d = await db;
-    await d.update('playlists', {'name': name}, where: 'id = ?', whereArgs: [id]);
+    await d.update('playlists', {'name': name},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> deletePlaylist(int id) async {
     final d = await db;
-    await d.delete('playlists', where: 'id = ?', whereArgs: [id]);
+    await d.transaction((txn) async {
+      await txn
+          .delete('playlist_tracks', where: 'playlist_id = ?', whereArgs: [id]);
+      await txn.delete('playlists', where: 'id = ?', whereArgs: [id]);
+    });
   }
-
 
   Future<List<PlaylistTrack>> getPlaylistTracks(int playlistId) async {
     final d = await db;
@@ -160,21 +509,29 @@ class LocalDb {
 
   Future<void> addTrackToPlaylist(int playlistId, Track track) async {
     final d = await db;
-    final count = await trackCountForPlaylist(playlistId);
-    final pt = PlaylistTrack(
-      playlistId: playlistId,
-      trackId: track.id,
-      title: track.title,
-      artist: track.artist,
-      iconUrl: track.iconUrl,
-      duration: track.duration,
-      genre: track.genre.isEmpty ? null : track.genre,
-      mp3Url: track.mp3Url,
-      position: count,
-      addedAt: DateTime.now().millisecondsSinceEpoch,
-    );
-    await d.insert('playlist_tracks', pt.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await d.transaction((txn) async {
+      final rows = await txn.rawQuery(
+        'SELECT COALESCE(MAX(position), -1) + 1 AS next_position '
+        'FROM playlist_tracks WHERE playlist_id = ?',
+        [playlistId],
+      );
+      final position = rows.first['next_position'] as int;
+      final pt = PlaylistTrack(
+        playlistId: playlistId,
+        trackId: track.id,
+        title: track.title,
+        artist: track.artist,
+        authorUrl: track.authorUrl,
+        iconUrl: track.iconUrl,
+        duration: track.duration,
+        genre: track.genre.isEmpty ? null : track.genre,
+        mp3Url: track.mp3Url,
+        position: position,
+        addedAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      await txn.insert('playlist_tracks', pt.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    });
   }
 
   Future<void> removeTrackFromPlaylist(int playlistId, String trackId) async {
@@ -186,6 +543,20 @@ class LocalDb {
     );
   }
 
+  Future<void> reorderPlaylistTracks(
+      int playlistId, List<String> trackIds) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      for (var i = 0; i < trackIds.length; i++) {
+        await txn.update(
+          'playlist_tracks',
+          {'position': i},
+          where: 'playlist_id = ? AND track_id = ?',
+          whereArgs: [playlistId, trackIds[i]],
+        );
+      }
+    });
+  }
 
   Future<List<Favorite>> getFavorites() async {
     final d = await db;
@@ -259,4 +630,148 @@ class LocalDb {
         duration: f.duration,
         audioType: 3,
       );
+
+  // Blacklist methods
+  Future<bool> isBlacklisted(String trackId) async {
+    final d = await db;
+    final r = await d.query(
+      'blacklisted_tracks',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+      limit: 1,
+    );
+    return r.isNotEmpty;
+  }
+
+  Future<void> addToBlacklist(Track track) async {
+    final d = await db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await d.insert(
+      'blacklisted_tracks',
+      {
+        'track_id': track.id,
+        'title': track.title,
+        'blacklisted_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> removeFromBlacklist(String trackId) async {
+    final d = await db;
+    await d.delete(
+      'blacklisted_tracks',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getBlacklistedTracks() async {
+    final d = await db;
+    return await d.query('blacklisted_tracks', orderBy: 'blacklisted_at DESC');
+  }
+
+  // Staged likes methods
+  Future<List<StagedLike>> getStagedLikes() async {
+    final d = await db;
+    final rows = await d.query('staged_likes', orderBy: 'liked_at DESC');
+    return rows.map(StagedLike.fromMap).toList();
+  }
+
+  Future<bool> isStagedLike(String trackId) async {
+    final d = await db;
+    final r = await d.query(
+      'staged_likes',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+      limit: 1,
+    );
+    return r.isNotEmpty;
+  }
+
+  Future<void> addStagedLike(Track track) async {
+    final d = await db;
+    final like = StagedLike(
+      trackId: track.id,
+      title: track.title,
+      artist: track.artist,
+      iconUrl: track.iconUrl,
+      duration: track.duration,
+      genre: track.genre.isEmpty ? null : track.genre,
+      likedAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await d.insert('staged_likes', like.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> removeStagedLike(String trackId) async {
+    final d = await db;
+    await d.delete('staged_likes', where: 'track_id = ?', whereArgs: [trackId]);
+  }
+
+  Future<void> clearStagedLikes() async {
+    final d = await db;
+    await d.delete('staged_likes');
+  }
+
+  static Track stagedLikeToTrack(StagedLike sl) => Track(
+        id: sl.trackId,
+        title: sl.title,
+        artist: sl.artist,
+        genre: sl.genre ?? '',
+        iconUrl: sl.iconUrl,
+        duration: sl.duration,
+        audioType: 3,
+      );
+
+  // Cached tracks methods
+  Future<String?> getCachedTrackPath(String trackId) async {
+    final d = await db;
+    final r = await d.query(
+      'cached_tracks',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+      limit: 1,
+    );
+    if (r.isEmpty) return null;
+    return r.first['local_path'] as String?;
+  }
+
+  Future<bool> isTrackCached(String trackId) async {
+    final d = await db;
+    final r = await d.query(
+      'cached_tracks',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+      limit: 1,
+    );
+    return r.isNotEmpty;
+  }
+
+  Future<void> addCachedTrack(
+      String trackId, String localPath, int size) async {
+    final d = await db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await d.insert(
+      'cached_tracks',
+      {
+        'track_id': trackId,
+        'local_path': localPath,
+        'cached_at': now,
+        'size': size,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> removeCachedTrack(String trackId) async {
+    final d = await db;
+    await d
+        .delete('cached_tracks', where: 'track_id = ?', whereArgs: [trackId]);
+  }
+
+  Future<List<Map<String, dynamic>>> getAllCachedTracks() async {
+    final d = await db;
+    return await d.query('cached_tracks', orderBy: 'cached_at DESC');
+  }
 }

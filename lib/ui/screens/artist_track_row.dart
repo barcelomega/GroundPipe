@@ -7,6 +7,7 @@ import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../theme/ng_theme.dart';
 import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 import '../widgets/ng_retro.dart';
 import 'player_screen.dart';
 
@@ -31,39 +32,12 @@ class ArtistTrackRow extends StatefulWidget {
 class _ArtistTrackRowState extends State<ArtistTrackRow> {
   bool _downloading = false;
 
-  Future<void> _onFavTap(NgViewModel vm, LibraryViewModel lvm) async {
-    final toNg = await lvm.favGoesToNg();
-    final ok = await lvm.toggleFavorite(widget.track);
-    if (!mounted) return;
-    if (!ok) {
-      final error = lvm.lastError;
-      lvm.clearError();
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(error ?? 'Failed to save favorite',
-            style: TextStyle(color: ngWhite, fontSize: 12)),
-        backgroundColor: ngRed,
-        behavior: SnackBarBehavior.floating,
-        shape: const RoundedRectangleBorder(),
-      ));
-    } else if (!toNg) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Saved to local favorites',
-            style: TextStyle(color: ngWhite, fontSize: 12)),
-        backgroundColor: ngOrange,
-        behavior: SnackBarBehavior.floating,
-        shape: const RoundedRectangleBorder(),
-      ));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
     final lvm = context.watch<LibraryViewModel>();
     final t = widget.track;
     final isActive = vm.currentTrack?.id == t.id;
-    final isFav = lvm.isFavorite(t.id);
-    final syncing = lvm.isFavoriteSyncing(t.id);
 
     return NgAudioRow(
       index: widget.index,
@@ -91,16 +65,16 @@ class _ArtistTrackRowState extends State<ArtistTrackRow> {
               child: Text(_fmt(t.duration), style: ngLabel),
             ),
           NgIconButton(
-            icon: isFav ? 'fav-on' : 'fav-add',
+            icon: 'more',
             padding: 5,
-            tooltip: isFav ? 'Remove from favorites' : 'Add to favorites',
-            onTap: syncing ? null : () => _onFavTap(vm, lvm),
-          ),
-          NgIconButton(
-            icon: 'playlist',
-            padding: 5,
-            tooltip: 'Add to playlist',
-            onTap: () => showAddToPlaylistSheet(context, t),
+            tooltip: 'More options',
+            onTap: () => showTrackContextMenu(
+              context,
+              t,
+              showAddToPlaylist: true,
+              showLike: true,
+              showDislike: true,
+            ),
           ),
           NgIconButton(
             icon: 'download',

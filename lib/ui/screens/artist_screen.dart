@@ -1,375 +1,306 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../data/model/ng_user.dart';
 import '../../data/model/track.dart';
 import '../../data/repository/ng_repository.dart';
 import '../../viewmodel/ng_viewmodel.dart';
-import '../theme/ng_theme.dart';
-import '../widgets/ng_retro.dart';
-import 'artist_audio_screen.dart';
-import 'artist_track_row.dart';
-import 'login_screen.dart';
-
-const _skin = NgSkin.gold;
-
-const _kAudioPreview = 8;
+import '../../viewmodel/library_viewmodel.dart';
+import '../widgets/track_list_item.dart';
+import '../widgets/mini_player.dart';
+import '../../data/model/author.dart';
+import '../../viewmodel/authors_viewmodel.dart';
+import '../widgets/author_actions.dart';
+import '../widgets/author_avatar.dart';
+import '../widgets/add_to_playlist_sheet.dart';
 
 class ArtistScreen extends StatefulWidget {
-  final String artist;
-  const ArtistScreen({super.key, required this.artist});
+  final String authorUrl;
+
+  const ArtistScreen({super.key, required this.authorUrl});
 
   @override
   State<ArtistScreen> createState() => _ArtistScreenState();
 }
 
 class _ArtistScreenState extends State<ArtistScreen> {
-  final _repo = NgRepository();
-
-  NgUser? _profile;
-  List<Track> _tracks = [];
-  bool _loadingProfile = true;
-  bool _loadingTracks = true;
+  bool _loading = true;
   String? _error;
-
-  bool _hasMore = false;
-
-  bool? _isFollowing;
-  bool _followBusy = false;
+  late final String _artistName;
+  final List<Track> _tracks = [];
+  int _page = 1;
+  bool _hasMore = true;
+  bool _loadingMore = false;
+  final _repo = NgRepository();
+  final _scroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
-    _loadTracks();
+    _artistName = Author.key(widget.authorUrl);
+    _scroll.addListener(_onScroll);
+    _loadArtistTracks();
   }
 
-  Future<void> _loadProfile() async {
-    try {
-      final profile = await _repo.getUserProfile(widget.artist);
-      if (!mounted) return;
-      setState(() {
-        _profile = profile;
-        _loadingProfile = false;
-        _isFollowing = profile?.isFollowing;
-      });
-    } catch (_) {
-      if (mounted) setState(() => _loadingProfile = false);
-    }
+  void _onScroll() {
+    if (_scroll.position.extentAfter < 400 && !_loading) _loadArtistTracks();
   }
 
-  Future<void> _loadTracks() async {
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadArtistTracks() async {
+    if (_loadingMore || !_hasMore) return;
+
+    setState(() {
+      if (_page == 1) {
+        _loading = true;
+      } else {
+        _loadingMore = true;
+      }
+      _error = null;
+    });
+
     try {
-      final (tracks, nextUrl) =
-          await _repo.getArtistTracksPage(widget.artist, page: 1);
+      final (newTracks, next) =
+          await _repo.getArtistTracksPage(_artistName, page: _page);
       if (!mounted) return;
       setState(() {
-        _tracks = tracks;
-        _hasMore = nextUrl != null || tracks.length > _kAudioPreview;
-        _loadingTracks = false;
+        final ids = _tracks.map((t) => t.id).toSet();
+        final fresh = newTracks.where((t) => ids.add(t.id)).toList();
+        _tracks.addAll(fresh);
+        _page++;
+        _hasMore = next != null && fresh.isNotEmpty;
+        _loading = false;
+        _loadingMore = false;
       });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = '$e';
-          _loadingTracks = false;
-        });
-      }
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+        _loadingMore = false;
+      });
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
-    final isSelf =
-        vm.currentUser?.username.toLowerCase() == widget.artist.toLowerCase();
+    final lvm = context.watch<LibraryViewModel>();
+    final authors = context.watch<AuthorsViewModel>();
+    final author = Author(username: _artistName, name: _artistName);
+    final blocked = authors.stateOf(author).blocked;
+    final visible = _tracks.where((t) => !lvm.isBlacklisted(t.id)).toList();
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
 
     return Scaffold(
-      backgroundColor: ngBlack,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            _TopBar(artist: widget.artist),
-            Expanded(
-              child: NgPageColumn(
-                child: ListView(
-                  padding: EdgeInsets.only(
-                      bottom: vm.currentTrack != null ? 90 : 12),
-                  children: [
-                    _profilePod(isSelf: isSelf),
-                    _tracksPod(),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-
-  Widget _profilePod({required bool isSelf}) {
-    final p = _profile;
-
-    final items = <NgInfoItem>[
-      if (p?.fans != null) NgInfoItem('Fans', p!.fans!),
-      if (p?.audioCount != null) NgInfoItem('Audio', p!.audioCount!),
-      if (p?.level != null) NgInfoItem('Level', p!.level!),
-      if (p?.joinDate != null) NgInfoItem('Joined', p!.joinDate!),
-      if (p?.country != null) NgInfoItem('Country', p!.country!),
-      if (p?.age != null) NgInfoItem('Age', p!.age!),
-      if (p?.gender != null) NgInfoItem('Gender', p!.gender!),
-    ];
-
-    return NgPod(
-      icon: 'user',
-      title: widget.artist,
-      skin: _skin,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 70,
-                height: 70,
-                decoration: BoxDecoration(
-                  color: ngBlack,
-                  border: Border.fromBorderSide(
-                      BorderSide(color: ngBrown, width: 2)),
-                ),
-                child: _loadingProfile
-                    ? const SizedBox.shrink()
-                    : p?.avatarUrl == null
-                        ? Image.asset(NgTex.defaultAudioIcon, fit: BoxFit.cover)
-                        : NgTrackIcon(url: p!.avatarUrl!, size: 66),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      widget.artist,
-                      style: ngLink.copyWith(fontSize: 17),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${widget.artist.toLowerCase()}.newgrounds.com',
-                      style: ngLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 8),
-                    if (!isSelf) _followButton(),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          if (_loadingProfile) const NgLoading(width: 100),
-          if (items.isNotEmpty) ...[
-            const NgHr(margin: EdgeInsets.symmetric(vertical: 9)),
-            NgInfoTable(items: items, skin: _skin, labelWidth: 66),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _followButton() {
-    final following = _isFollowing == true;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: NgButton(
-        label: _followBusy ? '…' : (following ? 'Following' : 'Follow'),
-        icon: following ? 'check' : 'user-add',
-        onPressed: _followBusy ? null : _onFollowTap,
-      ),
-    );
-  }
-
-  Future<void> _onFollowTap() async {
-    final vm = context.read<NgViewModel>();
-    if (vm.currentUser == null) {
-      final doLogin = await showDialog<bool>(
-        context: context,
-        barrierColor: ngBlack.withValues(alpha: 0.72),
-        builder: (_) => const NgLoginPromptDialog(
-          message: 'Log in to follow artists.',
-          skin: _skin,
-        ),
-      );
-      if (doLogin == true && mounted) {
-        await Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-        );
-        if (mounted) {
-          await context.read<NgViewModel>().fetchUser();
-          final status = await _repo.getFollowStatus(widget.artist);
-          if (mounted) setState(() => _isFollowing = status);
-        }
-      }
-      return;
-    }
-
-    final target = !(_isFollowing ?? false);
-    setState(() => _followBusy = true);
-    final confirmed = await vm.setFollow(widget.artist.toLowerCase(), target);
-    if (!mounted) return;
-    final ok = confirmed == target;
-    setState(() {
-      _followBusy = false;
-      if (ok) _isFollowing = target;
-    });
-    _snack(
-      ok
-          ? (target
-              ? 'Now following ${widget.artist}!'
-              : 'Unfollowed ${widget.artist}')
-          : (target ? 'Failed to follow' : 'Failed to unfollow'),
-      ok: ok,
-    );
-  }
-
-
-  Widget _tracksPod() {
-    final preview = _tracks.length > _kAudioPreview
-        ? _tracks.sublist(0, _kAudioPreview)
-        : _tracks;
-    final hidden = _tracks.length - preview.length;
-
-    final Widget body;
-    if (_loadingTracks) {
-      body = const NgLoading();
-    } else if (_error != null && _tracks.isEmpty) {
-      body = NgNotice(
-        text: 'Could not load tracks.\n$_error',
-        icon: 'flag',
-        action: NgButton(
-          label: 'Retry',
-          icon: 'refresh',
-          onPressed: () {
-            setState(() {
-              _loadingTracks = true;
-              _error = null;
-            });
-            _loadTracks();
-          },
-        ),
-      );
-    } else if (_tracks.isEmpty) {
-      body = const NgNotice(text: 'No tracks yet.', icon: 'audio');
-    } else {
-      body = Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < preview.length; i++)
-            ArtistTrackRow(
-              index: i,
-              track: preview[i],
-              allTracks: preview,
-              skin: _skin,
-            ),
-          if (_hasMore)
-            NgListRow(
-              index: preview.length,
-              skin: _skin,
-              onTap: _openAllAudio,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      hidden > 0
-                          ? 'View all audio ($hidden+ more) »'
-                          : 'View all audio »',
-                      style: ngLink,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      );
-    }
-
-    return NgPod.list(
-      icon: 'audio',
-      title: 'Audio',
-      skin: _skin,
-      action: _hasMore
-          ? NgPlateLink(label: 'View All »', onTap: _openAllAudio)
-          : null,
-      child: body,
-    );
-  }
-
-  void _openAllAudio() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ArtistAudioScreen(
-          artist: widget.artist,
-          initialTracks: _tracks,
-        ),
-      ),
-    );
-  }
-
-  void _snack(String text, {bool ok = true}) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(text, style: TextStyle(color: ngWhite, fontSize: 12)),
-      backgroundColor: ok ? ngOrange : ngRed,
-      behavior: SnackBarBehavior.floating,
-      shape: const RoundedRectangleBorder(),
-      duration: const Duration(seconds: 2),
-    ));
-  }
-}
-
-
-class _TopBar extends StatelessWidget {
-  final String artist;
-  const _TopBar({required this.artist});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 56,
-      decoration: BoxDecoration(
-        color: ngBlack,
-        border: Border(bottom: BorderSide(color: ngHairline)),
-      ),
-      child: Row(
-        children: [
-          NgIconButton(
-            icon: 'arrow-left',
-            padding: 10,
-            tooltip: 'Back',
-            onTap: () => Navigator.pop(context),
-          ),
-          Expanded(
-            child: Text(
-              artist,
-              style: ngH2.copyWith(fontSize: 18),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
+      backgroundColor: colorScheme.surface,
+      appBar: AppBar(
+        title: Row(children: [
+          AuthorAvatar(author: _artistName, size: 32),
           const SizedBox(width: 10),
-        ],
+          Expanded(
+              child: Text(_artistName.isEmpty ? 'Artist' : _artistName,
+                  maxLines: 1, overflow: TextOverflow.ellipsis)),
+        ]),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(48),
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: AuthorActions(author: author),
+          ),
+        ),
+      ),
+      body: blocked
+          ? const Center(
+              child: Text('Author blocked. Unblock to see their music.'))
+          : _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null && _tracks.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 64,
+                            color: colorScheme.error,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Failed to load artist',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: colorScheme.error,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            _error!,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            onPressed: () {
+                              setState(() {
+                                _page = 1;
+                                _tracks.clear();
+                                _hasMore = true;
+                              });
+                              _loadArtistTracks();
+                            },
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : visible.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.music_off,
+                                size: 64,
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No tracks found',
+                                style: theme.textTheme.bodyLarge?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          controller: _scroll,
+                          itemCount: visible.length +
+                              (_hasMore || _error != null ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (index == visible.length) {
+                              if (_error != null) {
+                                return TextButton(
+                                    onPressed: _loadArtistTracks,
+                                    child: const Text(
+                                        'Could not load more. Retry'));
+                              }
+                              if (!_loadingMore) {
+                                return TextButton(
+                                    onPressed: _loadArtistTracks,
+                                    child: const Text('Load more'));
+                              }
+                              return const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child:
+                                    Center(child: CircularProgressIndicator()),
+                              );
+                            }
+
+                            final track = visible[index];
+                            return TrackListItem(
+                              track: track,
+                              isLiked: lvm.isStagedLike(track.id),
+                              onTap: () {
+                                vm.setQueueContext(visible);
+                                vm.playTrack(track);
+                              },
+                              onLongPress: () => _showTrackMenu(context, track),
+                            );
+                          },
+                        ),
+      bottomNavigationBar: vm.currentTrack == null
+          ? null
+          : const SafeArea(
+              top: false,
+              child: MiniPlayer(artistLinkEnabled: false),
+            ),
+    );
+  }
+
+  void _showTrackMenu(BuildContext context, Track track) {
+    final lvm = context.read<LibraryViewModel>();
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (lvm.isStagedLike(track.id))
+              ListTile(
+                leading: const Icon(Icons.favorite),
+                title: const Text('Remove from Likes'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await lvm.removeStagedLike(track.id);
+                },
+              )
+            else
+              ListTile(
+                leading: const Icon(Icons.favorite_border),
+                title: const Text('Add to Likes'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  await lvm.addStagedLike(track);
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Send to Playlist'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showPlaylistPicker(context, track);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.block),
+              title: const Text('Blacklist'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                await lvm.addToBlacklist(track);
+                setState(() {
+                  _tracks.removeWhere((t) => t.id == track.id);
+                });
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Blacklisted: ${track.title}'),
+                      action: SnackBarAction(
+                        label: 'Undo',
+                        onPressed: () => lvm.removeFromBlacklist(track.id),
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  Future<void> _showPlaylistPicker(BuildContext context, Track track) async {
+    final lvm = context.read<LibraryViewModel>();
+    final playlist = await showAddToPlaylistSheet(
+      context,
+      tracks: [track],
+      lvm: lvm,
+    );
+    if (playlist == null || !context.mounted) return;
+    await lvm.addTrackToPlaylist(playlist, track);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Added to "${playlist.name}"')),
+      );
+    }
   }
 }

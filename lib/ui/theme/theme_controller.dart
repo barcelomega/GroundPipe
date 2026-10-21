@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -21,7 +20,6 @@ extension NgDesignX on NgDesign {
         NgDesign.modern => 'Flat dark panels, Arial, star votebar.',
       };
 
-  String get previewAsset => 'assets/ngmusic_theme-previews/${name}.png';
 }
 
 class NgPaletteData {

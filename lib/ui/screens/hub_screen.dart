@@ -20,8 +20,7 @@ class HubScreen extends StatefulWidget {
   State<HubScreen> createState() => _HubScreenState();
 }
 
-class _HubScreenState extends State<HubScreen>
-    with TickerProviderStateMixin {
+class _HubScreenState extends State<HubScreen> with TickerProviderStateMixin {
   late TabController _tab;
   int _idx = 0;
 
@@ -103,126 +102,125 @@ class _HubScreenState extends State<HubScreen>
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
-    final landscape = MediaQuery.of(context).size.width >
-        MediaQuery.of(context).size.height;
+    final landscape =
+        MediaQuery.of(context).size.width > MediaQuery.of(context).size.height;
 
     return KeyedSubtree(
       key: ValueKey('hub-$landscape'),
       child: Scaffold(
-      backgroundColor: ngBlack,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            NgLogoBar(
-              username: vm.currentUser?.username,
-              avatarUrl: vm.currentUser?.avatarUrl,
-              onUserTap: () => _onUserTap(vm),
-              leading: landscape
-                  ? NgIconButton(
-                      icon: 'menu',
-                      padding: 10,
-                      tooltip: 'Browse genres',
-                      onTap: () => setState(() => _menuOpen = !_menuOpen),
-                    )
-                  : null,
-              middle: landscape
-                  ? Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: NgSearchBar(
-                        controller: _searchCtrl,
-                        focusNode: _searchFocus,
-                        searching: vm.isInSearch,
-                        onSubmit: _onSearch,
-                        onClear: () => _onSearch(''),
-                      ),
-                    )
-                  : null,
-            ),
-            Expanded(
-              child: Stack(
-                children: [
-                  Column(
-                    children: [
-                      if (!landscape)
-                        ValueListenableBuilder<double>(
-                          valueListenable: _searchProgress,
-                          builder: (_, progress, __) => SizedBox(
-                            height: _searchBarH * (1 - progress),
-                            child: ClipRect(
-                              child: OverflowBox(
-                                alignment: Alignment.topLeft,
-                                maxHeight: _searchBarH,
-                                child: Row(
-                                  children: [
-                                    NgIconButton(
-                                      icon: 'menu',
-                                      padding: 10,
-                                      tooltip: 'Browse genres',
-                                      onTap: () => setState(
-                                          () => _menuOpen = !_menuOpen),
-                                    ),
-                                    Expanded(
-                                      child: NgSearchBar(
-                                        controller: _searchCtrl,
-                                        focusNode: _searchFocus,
-                                        searching: vm.isInSearch,
-                                        onSubmit: _onSearch,
-                                        onClear: () => _onSearch(''),
+        backgroundColor: ngBlack,
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              NgLogoBar(
+                username: vm.currentUser?.username,
+                avatarUrl: vm.currentUser?.avatarUrl,
+                onUserTap: () => _onUserTap(vm),
+                leading: landscape
+                    ? NgIconButton(
+                        icon: 'menu',
+                        padding: 10,
+                        tooltip: 'Browse genres',
+                        onTap: () => setState(() => _menuOpen = !_menuOpen),
+                      )
+                    : null,
+                middle: landscape
+                    ? Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: NgSearchBar(
+                          controller: _searchCtrl,
+                          focusNode: _searchFocus,
+                          searching: vm.isInSearch,
+                          onSubmit: _onSearch,
+                          onClear: () => _onSearch(''),
+                        ),
+                      )
+                    : null,
+              ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Column(
+                      children: [
+                        if (!landscape)
+                          ValueListenableBuilder<double>(
+                            valueListenable: _searchProgress,
+                            builder: (_, progress, __) => SizedBox(
+                              height: _searchBarH * (1 - progress),
+                              child: ClipRect(
+                                child: OverflowBox(
+                                  alignment: Alignment.topLeft,
+                                  maxHeight: _searchBarH,
+                                  child: Row(
+                                    children: [
+                                      NgIconButton(
+                                        icon: 'menu',
+                                        padding: 10,
+                                        tooltip: 'Browse genres',
+                                        onTap: () => setState(
+                                            () => _menuOpen = !_menuOpen),
                                       ),
-                                    ),
-                                  ],
+                                      Expanded(
+                                        child: NgSearchBar(
+                                          controller: _searchCtrl,
+                                          focusNode: _searchFocus,
+                                          searching: vm.isInSearch,
+                                          onSubmit: _onSearch,
+                                          onClear: () => _onSearch(''),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
                             ),
                           ),
+                        if (!landscape)
+                          AnimatedBuilder(
+                            animation: _tab.animation!,
+                            builder: (_, __) => NgNavPlates(
+                              labels: _tabLabels,
+                              index: _idx,
+                              onSelect: (i) => _tab.animateTo(i),
+                              progress:
+                                  _tab.animation?.value ?? _idx.toDouble(),
+                            ),
+                          ),
+                        Expanded(
+                          child: _hubContent(vm, landscape),
                         ),
-                      if (!landscape)
-                        AnimatedBuilder(
-                          animation: _tab.animation!,
-                          builder: (_, __) => NgNavPlates(
-                            labels: _tabLabels,
-                            index: _idx,
-                            onSelect: (i) => _tab.animateTo(i),
-                            progress:
-                                _tab.animation?.value ?? _idx.toDouble(),
+                      ],
+                    ),
+                    if (_menuOpen)
+                      ModalBarrier(
+                        color: ngBlack.withOpacity(0.72),
+                        dismissible: true,
+                        onDismiss: () => setState(() => _menuOpen = false),
+                      ),
+                    AnimatedSlide(
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      offset: _menuOpen ? Offset.zero : const Offset(-1, 0),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Material(
+                          color: ngBlack,
+                          child: SizedBox(
+                            width: 210,
+                            child: _GenreSidebar(
+                              onClose: () => setState(() => _menuOpen = false),
+                            ),
                           ),
                         ),
-                      Expanded(
-                        child: _hubContent(vm, landscape),
-                      ),
-                    ],
-                  ),
-
-                  if (_menuOpen)
-                    ModalBarrier(
-                      color: ngBlack.withValues(alpha: 0.72),
-                      dismissible: true,
-                      onDismiss: () => setState(() => _menuOpen = false),
-                    ),
-                  AnimatedSlide(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeOut,
-                    offset: _menuOpen ? Offset.zero : const Offset(-1, 0),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Material(
-                        color: ngBlack,
-                        child: SizedBox(
-                          width: 210,
-                          child: _GenreSidebar(
-                            onClose: () => setState(() => _menuOpen = false),
-                          ),
-                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -343,7 +341,6 @@ class _HubScreenState extends State<HubScreen>
   }
 }
 
-
 class _GenreSidebar extends StatefulWidget {
   final VoidCallback onClose;
   const _GenreSidebar({required this.onClose});
@@ -386,12 +383,13 @@ class _GenreSidebarState extends State<_GenreSidebar> {
                     ),
                   ),
                 ),
-                Builder(builder: (_) => NgIconButton(
-                  icon: 'close',
-                  padding: 8,
-                  tooltip: 'Close',
-                  onTap: widget.onClose,
-                )),
+                Builder(
+                    builder: (_) => NgIconButton(
+                          icon: 'close',
+                          padding: 8,
+                          tooltip: 'Close',
+                          onTap: widget.onClose,
+                        )),
               ],
             ),
           ),
@@ -508,7 +506,6 @@ class _SideLink extends StatelessWidget {
   }
 }
 
-
 void _openPlayer(BuildContext context) {
   Navigator.push(
     context,
@@ -525,7 +522,6 @@ void _openPlayer(BuildContext context) {
     ),
   );
 }
-
 
 class _TabPage extends StatefulWidget {
   final NgTab tab;
@@ -614,15 +610,13 @@ class _TabPageState extends State<_TabPage> with AutomaticKeepAliveClientMixin {
       skin: NgSkin.gold,
       action: NgPlateLink(
         label: vm.genre == null ? 'Reload »' : 'Clear Filter »',
-        onTap: () => vm.genre == null
-            ? vm.reloadTab(widget.tab)
-            : vm.setGenre(null),
+        onTap: () =>
+            vm.genre == null ? vm.reloadTab(widget.tab) : vm.setGenre(null),
       ),
       child: body,
     );
   }
 }
-
 
 class _SearchResults extends StatefulWidget {
   final NgViewModel vm;
@@ -690,13 +684,13 @@ class _SearchResultsState extends State<_SearchResults> {
   }
 }
 
-
 class _TrackRow extends StatelessWidget {
   final Track track;
   final int index;
 
   final List<Track> queue;
-  const _TrackRow({required this.track, required this.index, required this.queue});
+  const _TrackRow(
+      {required this.track, required this.index, required this.queue});
 
   @override
   Widget build(BuildContext context) {
@@ -712,8 +706,7 @@ class _TrackRow extends StatelessWidget {
       artist: track.artist,
       playing: isActive,
       paused: isActive && !vm.isPlaying,
-      onIconTap: () =>
-          isActive ? vm.togglePlayPause() : vm.playTrack(track),
+      onIconTap: () => isActive ? vm.togglePlayPause() : vm.playTrack(track),
       onTap: () {
         vm.setQueueContext(queue);
         vm.playTrack(track);
@@ -744,7 +737,6 @@ class _TrackRow extends StatelessWidget {
   }
 }
 
-
 class _TrackActions extends StatelessWidget {
   final Track track;
   const _TrackActions({required this.track});
@@ -767,7 +759,20 @@ class _TrackActions extends StatelessWidget {
           icon: 'playlist',
           padding: 5,
           tooltip: 'Add to playlist',
-          onTap: () => showAddToPlaylistSheet(context, track),
+          onTap: () async {
+            final playlist = await showAddToPlaylistSheet(
+              context,
+              tracks: [track],
+              lvm: lvm,
+            );
+            if (playlist == null || !context.mounted) return;
+            await lvm.addTrackToPlaylist(playlist, track);
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Added to "${playlist.name}"')),
+              );
+            }
+          },
         ),
       ],
     );

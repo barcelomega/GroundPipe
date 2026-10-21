@@ -1,71 +1,46 @@
 # NGMusic
 
-<img width="2160" height="1080" alt="Picsart_26-09-27_04-57-53-892" src="https://github.com/user-attachments/assets/f5e87fbb-d0d5-4ec7-bf84-a9e9bb164cc1" />
+<img width="2160" height="1080" alt="GroundPipe app screenshot" src="https://github.com/user-attachments/assets/f5e87fbb-d0d5-4ec7-bf84-a9e9bb164cc1" />
 
-**English** | [Русский](README.ru.md)
-
-A mobile player for the [Newgrounds Audio Portal](https://www.newgrounds.com/audio) — an unofficial client with a lot of features. The same NG Audio Portal, but as a convenient app.
+GroundPipe is an unofficial Android music player for the [Newgrounds Audio Portal](https://www.newgrounds.com/audio). It browses Newgrounds audio and streams tracks directly from Newgrounds and its audio CDN.
 
 ## Features
 
-- **Catalog and search:** hubs (Featured / Popular / New / Top Rated), track search with endless scrolling
-- **Player:** mp3 streaming, queue, auto-advance to the next track, mini-player, background playback
-- **Ratings:** 0–5 star voting in 0.5 steps for the Modern skin, whole stars for the Classic skin
-- **Favorites and playlists:** add tracks to your Newgrounds account favorites, local playlists
-- **Account:** log in to Newgrounds, view and create your playlists library
-- **Artists:** artist pages with their tracks
-- **Downloads:** save mp3 files to the device
+- **Discover:** browse Featured, Latest, and Popular audio; filter by genre and search tracks.
+- **Recommendations:** get suggestions based on your listening library.
+- **Timeline:** browse recent music from artists you follow in the app.
+- **Player:** stream audio, control playback from the mini-player or full-screen player, and continue listening in the background.
+- **Library:** save tracks to Likes, create local playlists, and cache tracks and artwork for offline access.
+- **Artist pages:** explore tracks by Newgrounds artists.
+- **Track details:** view Newgrounds metadata and open recommended tracks.
 
-Data is pulled directly from newgrounds.com: HTML is parsed locally, audio is streamed from the Newgrounds CDN.
+GroundPipe is an independent client, not an official Newgrounds app. Newgrounds pages are fetched and parsed by the app; audio playback uses the URLs provided by Newgrounds.
 
 ## Tech stack
 
-- Flutter / Dart, min SDK — Android 5.0 (API 21)
-- `http` + `html` for fetching and parsing pages
-- Media3 (ExoPlayer + MediaSessionService) for playback and background mode
-- `provider` for state management (`ChangeNotifier`)
-- `sqflite` as the base of the local library (favorites, playlists)
-- `webview_flutter` for logging in to a Newgrounds account
+- Flutter and Dart
+- Android Media3 for audio playback, media controls, and background playback
+- `http` and `html` for Newgrounds requests and HTML parsing
+- `provider` for app state management
+- `sqflite` for Likes, playlists, and local track metadata
+- `webview_flutter` for Newgrounds web flows
 
 ## Build and run
 
+Install Flutter and the Android SDK, then run:
+
 ```bash
 flutter pub get
-flutter run                    # dev mode
-flutter build apk --release   # release APK
+flutter run
+flutter build apk --release
 ```
 
-Tests:
+Run tests with:
 
 ```bash
 flutter test
 ```
 
-## Structure
+## Notes
 
-```
-lib/
-├── data/
-│   ├── model/track.dart               # Track model
-│   └── repository/ng_repository.dart  # newgrounds.com requests and parsing
-├── player/
-│   └── ng_audio_handler.dart          # Audio handler (bridge to the native Media3 player)
-├── services/
-│   └── track_downloader.dart          # mp3 downloads
-├── ui/
-│   ├── screens/                       # Hub, player, library, account, artists, search
-│   ├── widgets/                       # Retro widgets: 2015 chrome, votebar, mini-player
-│   └── theme/ng_theme.dart            # NG palette and fonts
-├── viewmodel/
-│   ├── ng_viewmodel.dart              # Catalog and player state
-│   └── library_viewmodel.dart         # Local library
-└── main.dart                          # Entry point
-```
-
-## ❗IMPORTANT❗
-
-This app is unofficial and not affiliated with Newgrounds. All content rights belong to its authors and Newgrounds.
-
-## License
-
-Distributed under the [MIT License](LICENSE).
+GroundPipe is not affiliated with or endorsed by Newgrounds. Music and other content remain the property of their respective creators and rights holders. Please follow Newgrounds' terms and each creator's licensing requirements.

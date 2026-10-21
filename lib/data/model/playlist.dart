@@ -1,3 +1,5 @@
+import 'track.dart';
+
 class Playlist {
   final int? id;
   final String name;
@@ -45,6 +47,7 @@ class PlaylistTrack {
   final String trackId;
   final String title;
   final String artist;
+  final String? authorUrl;
   final String iconUrl;
   final int duration;
   final String? genre;
@@ -58,6 +61,7 @@ class PlaylistTrack {
     required this.trackId,
     required this.title,
     required this.artist,
+    this.authorUrl,
     required this.iconUrl,
     required this.duration,
     this.genre,
@@ -72,6 +76,7 @@ class PlaylistTrack {
         'track_id': trackId,
         'title': title,
         'artist': artist,
+        'author_url': authorUrl,
         'icon_url': iconUrl,
         'duration': duration,
         'genre': genre,
@@ -86,12 +91,25 @@ class PlaylistTrack {
         trackId: m['track_id'] as String,
         title: m['title'] as String,
         artist: m['artist'] as String,
+        authorUrl: m['author_url'] as String?,
         iconUrl: m['icon_url'] as String,
         duration: m['duration'] as int? ?? 0,
         genre: m['genre'] as String?,
         mp3Url: m['mp3_url'] as String?,
         position: m['position'] as int? ?? 0,
         addedAt: m['added_at'] as int,
+      );
+
+  Track toTrack() => Track(
+        id: trackId,
+        title: title,
+        artist: artist,
+        authorUrl: authorUrl,
+        iconUrl: iconUrl,
+        duration: duration,
+        audioType: 3, // Default audio type
+        genre: genre ?? '',
+        mp3Url: mp3Url,
       );
 }
 
@@ -176,4 +194,64 @@ class NgFaveButton {
     this.followUrl,
     this.unfollowUrl,
   });
+}
+
+class StagedLike {
+  final int? id;
+  final String trackId;
+  final String title;
+  final String artist;
+  final String? authorUrl;
+  final String iconUrl;
+  final int duration;
+  final String? genre;
+  final int likedAt;
+
+  const StagedLike({
+    this.id,
+    required this.trackId,
+    required this.title,
+    required this.artist,
+    this.authorUrl,
+    required this.iconUrl,
+    required this.duration,
+    this.genre,
+    required this.likedAt,
+  });
+
+  Map<String, dynamic> toMap() => {
+        if (id != null) 'id': id,
+        'track_id': trackId,
+        'title': title,
+        'artist': artist,
+        'author_url': authorUrl,
+        'icon_url': iconUrl,
+        'duration': duration,
+        'genre': genre,
+        'liked_at': likedAt,
+      };
+
+  factory StagedLike.fromMap(Map<String, dynamic> m) => StagedLike(
+        id: m['id'] as int?,
+        trackId: m['track_id'] as String,
+        title: m['title'] as String,
+        artist: m['artist'] as String,
+        authorUrl: m['author_url'] as String?,
+        iconUrl: m['icon_url'] as String,
+        duration: m['duration'] as int? ?? 0,
+        genre: m['genre'] as String?,
+        likedAt: m['liked_at'] as int,
+      );
+
+  Track toTrack() => Track(
+        id: trackId,
+        title: title,
+        artist: artist,
+        authorUrl: authorUrl,
+        iconUrl: iconUrl,
+        duration: duration,
+        audioType: 3, // Default audio type
+        genre: genre ?? '',
+        mp3Url: null,
+      );
 }

@@ -198,7 +198,7 @@ ThemeData get ngTheme => ThemeData(
         activeTrackColor: ngPlayerYellow,
         inactiveTrackColor: ngBlack,
         thumbColor: ngPlayerYellow,
-        overlayColor: ngPlayerYellow.withValues(alpha: 0.2),
+        overlayColor: ngPlayerYellow.withOpacity(0.2),
         trackHeight: 12,
         trackShape: const RectangularSliderTrackShape(),
       ),

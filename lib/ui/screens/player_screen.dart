@@ -13,7 +13,7 @@ import '../../services/track_downloader.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../theme/ng_theme.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 import '../widgets/ng_player.dart';
 import '../widgets/ng_retro.dart';
 import 'artist_screen.dart';
@@ -118,6 +118,7 @@ class PlayerScreen extends StatelessWidget {
                             html: track.descriptionHtml,
                             fallbackText: track.description,
                           ),
+                        _QueuePod(currentTrack: track),
                         _ReviewsPod(track: track),
                       ],
                     ],
@@ -140,7 +141,7 @@ Future<void> _requireLogin(
 ) async {
   final doLogin = await showDialog<bool>(
     context: context,
-    barrierColor: ngBlack.withValues(alpha: 0.72),
+    barrierColor: ngBlack.withOpacity(0.72),
     builder: (ctx) => Dialog(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -205,23 +206,10 @@ class _TopBar extends StatefulWidget {
 }
 
 class _TopBarState extends State<_TopBar> {
-  Future<void> _onFavTap(
-      BuildContext context, NgViewModel vm, LibraryViewModel lvm) async {
-    final toNg = await lvm.favGoesToNg();
-    final ok = await lvm.toggleFavorite(widget.track!);
-    if (!context.mounted) return;
-    if (!ok) {
-      final error = lvm.lastError;
-      lvm.clearError();
-      _showNgSnack(context, error ?? 'Failed to save favorite', ok: false);
-    } else if (!toNg) {
-      _showNgSnack(context, 'Saved to local favorites', ok: true);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final track = widget.track;
+    final lvm = context.watch<LibraryViewModel>();
 
     return Container(
       height: 56,
@@ -229,41 +217,72 @@ class _TopBarState extends State<_TopBar> {
         color: ngBlack,
         border: Border(bottom: BorderSide(color: ngHairline)),
       ),
-      child: Row(
+      child: Stack(
         children: [
-          NgIconButton(
-            icon: 'collapse',
-            padding: 10,
-            tooltip: 'Close player',
-            onTap: () => Navigator.maybePop(context),
-          ),
-          Expanded(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Image.asset(NgTex.logo, height: 40, fit: BoxFit.contain),
+          // Left: close button
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: NgIconButton(
+              icon: 'collapse',
+              padding: 10,
+              tooltip: 'Close player',
+              onTap: () => Navigator.maybePop(context),
             ),
           ),
-          if (track != null) ...[
-            Builder(builder: (ctx) {
-              final lvm = ctx.watch<LibraryViewModel>();
-              final vm = ctx.watch<NgViewModel>();
-              final isFav = lvm.isFavorite(track.id);
-              final syncing = lvm.isFavoriteSyncing(track.id);
-              return NgIconButton(
-                icon: isFav ? 'fav-on' : 'fav-add',
-                padding: 9,
-                tooltip: isFav ? 'Remove from favorites' : 'Add to favorites',
-                onTap: syncing ? null : () => _onFavTap(ctx, vm, lvm),
-              );
-            }),
-            NgIconButton(
-              icon: 'playlist',
-              padding: 9,
-              tooltip: 'Add to playlist',
-              onTap: () => showAddToPlaylistSheet(context, track),
+          // Center: logo/title - truly centered
+          Center(
+            child: Image.asset(NgTex.logo, height: 40, fit: BoxFit.contain),
+          ),
+          // Right: like + more buttons
+          if (track != null)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  NgIconButton(
+                    icon: lvm.isStagedLike(track.id) ? 'fav-on' : 'fav-add',
+                    padding: 9,
+                    tooltip: lvm.isStagedLike(track.id) ? 'Remove from Likes' : 'Add to Likes',
+                    onTap: () async {
+                      if (lvm.isStagedLike(track.id)) {
+                        await lvm.removeStagedLike(track.id);
+                      } else {
+                        await lvm.addStagedLike(track);
+                      }
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(lvm.isStagedLike(track.id)
+                                ? 'Removed from Likes'
+                                : 'Added to Likes'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 4),
+                  NgIconButton(
+                    icon: 'more',
+                    padding: 9,
+                    tooltip: 'More options',
+                    onTap: () => showTrackContextMenu(
+                      context,
+                      track,
+                      showAddToPlaylist: true,
+                      showLike: true,
+                      showDislike: true,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+              ),
             ),
-            const SizedBox(width: 4),
-          ],
         ],
       ),
     );
@@ -970,12 +989,11 @@ class _CreditsPod extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = track;
-    final artist = t.artist;
     final score = double.tryParse(t.score ?? '') ?? 0;
 
     void openProfile() => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => ArtistScreen(artist: artist)),
+          MaterialPageRoute(builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
         );
 
     return NgPod.list(
@@ -1098,7 +1116,7 @@ class _AuthorPodState extends State<_AuthorPod> {
 
     void openProfile() => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => ArtistScreen(artist: artist)),
+          MaterialPageRoute(builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
         );
 
     return NgPod(
@@ -1732,7 +1750,7 @@ class _ReviewCard extends StatelessWidget {
     var busy = false;
     showDialog(
       context: context,
-      barrierColor: ngBlack.withValues(alpha: 0.72),
+      barrierColor: ngBlack.withOpacity(0.72),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDlg) {
           Future<void> submit() async {
@@ -2223,5 +2241,182 @@ class _MyReviewBlock extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+// Queue Pod - shows upcoming tracks
+class _QueuePod extends StatelessWidget {
+  final Track currentTrack;
+
+  const _QueuePod({required this.currentTrack});
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<NgViewModel>();
+    final queue = vm.queueContext;
+
+    if (queue == null || queue.isEmpty) return const SizedBox.shrink();
+
+    // Find current track position
+    final currentIdx = queue.indexWhere((t) => t.id == currentTrack.id);
+    if (currentIdx == -1) return const SizedBox.shrink();
+
+    // Get upcoming tracks (including current)
+    final upcoming = queue.sublist(currentIdx);
+    if (upcoming.length <= 1) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      child: NgPod(
+        icon: 'playlist',
+        title: 'Queue (${upcoming.length} tracks)',
+        skin: _skin,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (int i = 0; i < upcoming.length; i++)
+              _QueueTrackItem(
+                track: upcoming[i],
+                index: i,
+                isCurrent: i == 0,
+                isLast: i == upcoming.length - 1,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _QueueTrackItem extends StatelessWidget {
+  final Track track;
+  final int index;
+  final bool isCurrent;
+  final bool isLast;
+
+  const _QueueTrackItem({
+    required this.track,
+    required this.index,
+    required this.isCurrent,
+    required this.isLast,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final vm = context.watch<NgViewModel>();
+
+    return GestureDetector(
+      onTap: isCurrent ? null : () => vm.playTrack(track),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: isCurrent ? ngOrange.withOpacity(0.1) : Colors.transparent,
+          border: !isLast
+              ? Border(bottom: BorderSide(color: ngHairline.withOpacity(0.3)))
+              : null,
+        ),
+        child: Row(
+          children: [
+            // Position indicator or playing icon
+            SizedBox(
+              width: 32,
+              child: isCurrent
+                  ? Icon(Icons.play_arrow, color: ngOrange, size: 20)
+                  : Text(
+                      '${index + 1}',
+                      style: TextStyle(
+                        color: ngWhite.withOpacity(0.4),
+                        fontFamily: ngHeaderFont,
+                        fontSize: 13,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+            ),
+            const SizedBox(width: 8),
+            // Track icon
+            if (track.iconUrl.isNotEmpty)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: Image.network(
+                  track.iconUrl,
+                  width: 40,
+                  height: 40,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    width: 40,
+                    height: 40,
+                    color: ngWhite.withOpacity(0.05),
+                    child: Icon(
+                      Icons.music_note,
+                      color: ngWhite.withOpacity(0.3),
+                      size: 20,
+                    ),
+                  ),
+                ),
+              )
+            else
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: ngWhite.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+                child: Icon(
+                  Icons.music_note,
+                  color: ngWhite.withOpacity(0.3),
+                  size: 20,
+                ),
+              ),
+            const SizedBox(width: 12),
+            // Track info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    track.title,
+                    style: TextStyle(
+                      fontFamily: ngHeaderFont,
+                      fontSize: 13,
+                      color: isCurrent ? ngOrange : ngWhite,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    track.artist,
+                    style: TextStyle(
+                      color: ngWhite.withOpacity(0.5),
+                      fontSize: 11,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            // Duration
+            if (track.duration > 0)
+              Text(
+                _formatDuration(track.duration),
+                style: TextStyle(
+                  color: ngWhite.withOpacity(0.4),
+                  fontSize: 11,
+                  fontFamily: ngHeaderFont,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return '${m}:${s.toString().padLeft(2, '0')}';
   }
 }

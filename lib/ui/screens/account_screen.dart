@@ -180,8 +180,9 @@ class _AccountScreenState extends State<AccountScreen>
     if (username == null || username.isEmpty || !mounted) return;
 
     await vm.fetchUser();
-    if (!mounted) return;
-    await lvm.syncNgPlaylists(username);
+    // Note: Newgrounds sync removed in refactor
+    // if (!mounted) return;
+    // await lvm.syncNgPlaylists(username);
   }
 
   Future<void> _logout() async {
@@ -190,7 +191,7 @@ class _AccountScreenState extends State<AccountScreen>
 
     final confirm = await showDialog<bool>(
       context: context,
-      barrierColor: ngBlack.withValues(alpha: 0.72),
+      barrierColor: ngBlack.withOpacity(0.72),
       builder: (ctx) => Dialog(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -228,8 +229,9 @@ class _AccountScreenState extends State<AccountScreen>
     if (confirm != true || !mounted) return;
 
     await vm.logout();
-    if (!mounted) return;
-    await lvm.clearNgPlaylists();
+    // Note: Newgrounds sync removed in refactor
+    // if (!mounted) return;
+    // await lvm.clearNgPlaylists();
     if (!mounted) return;
     Navigator.maybePop(context);
   }
@@ -379,19 +381,13 @@ class _ProfilePod extends StatelessWidget {
   String _tracks(int n) => n == 1 ? '1 track' : '$n tracks';
 
   String _favorites(LibraryViewModel lvm) {
-    final total = lvm.favorites.length;
-    if (total == 0) return 'none yet';
-    final fromNg = lvm.ngFavorites.length;
-    return fromNg == 0
-        ? '${_tracks(total)} in app'
-        : '${_tracks(total)} ($fromNg on NG)';
+    final total = lvm.stagedLikes.length;
+    return total == 0 ? 'none yet' : _tracks(total);
   }
 
   String _playlists(LibraryViewModel lvm) {
     final total = lvm.playlists.length;
-    if (total == 0) return 'none yet';
-    final fromNg = lvm.ngPlaylists.length;
-    return fromNg == 0 ? '$total local' : '$total ($fromNg from NG)';
+    return total == 0 ? 'none yet' : '$total local';
   }
 }
 
@@ -507,12 +503,6 @@ class _SettingsPod extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final lvm = context.watch<LibraryViewModel>();
-    final target = lvm.favTarget;
-
-    void select(FavoriteSaveTarget t) =>
-        context.read<LibraryViewModel>().setFavTarget(t);
-
     return NgPod.list(
       icon: 'gear',
       title: 'Settings',
@@ -541,35 +531,6 @@ class _SettingsPod extends StatelessWidget {
               selected: themeCtl.mode == mode,
               onSelect: () => themeCtl.setMode(mode),
             ),
-          Padding(
-            padding: EdgeInsets.fromLTRB(11, 10, 11, 6),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Save favorites to', style: ngH3),
-                SizedBox(height: 4),
-                Text(
-                  'Choose whether the heart button saves tracks only in this '
-                  'app, or to your real Newgrounds favorites.',
-                  style: ngBodySmall,
-                ),
-              ],
-            ),
-          ),
-          _OptionRow(
-            index: 0,
-            label: 'This App',
-            hint: 'Hearts stay in NGMusic.',
-            selected: target == FavoriteSaveTarget.local,
-            onSelect: () => select(FavoriteSaveTarget.local),
-          ),
-          _OptionRow(
-            index: 1,
-            label: 'Newgrounds',
-            hint: 'Hearts go to your NG favorites.',
-            selected: target == FavoriteSaveTarget.newgrounds,
-            onSelect: () => select(FavoriteSaveTarget.newgrounds),
-          ),
         ],
       ),
     );

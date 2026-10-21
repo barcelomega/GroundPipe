@@ -10,6 +10,10 @@ import '../model/ng_user.dart';
 import '../model/ng_review.dart';
 import '../model/playlist.dart';
 import 'ng_auth.dart';
+import 'local_db.dart';
+import 'dart:async';
+import 'dart:collection';
+import '../model/author.dart';
 
 class NgSiteDownException implements Exception {
   final int statusCode;
@@ -22,27 +26,218 @@ class NgSiteDownException implements Exception {
 }
 
 class NgRepository {
+  static final _authorAvatars = <String, Future<String?>>{};
+
+  Future<String?> getAuthorAvatar(String author) {
+    final username = Author.key(author);
+    return _authorAvatars.putIfAbsent(username, () async {
+      try {
+        final html = await _connectRaw('https://$username.newgrounds.com');
+        final avatar = parseAuthorAvatar(html);
+        if (avatar == null || avatar.isEmpty) _authorAvatars.remove(username);
+        return avatar;
+      } catch (_) {
+        _authorAvatars.remove(username);
+        return null;
+      }
+    });
+  }
+
+  String? parseAuthorAvatar(String html) {
+    final doc = htmlParser.parse(html);
+    return doc
+            .querySelector('meta[property="og:image"]')
+            ?.attributes['content'] ??
+        doc
+            .querySelector('.user-icon image, .usericon image')
+            ?.attributes['href'] ??
+        doc.querySelector('.user-icon img, .usericon img')?.attributes['src'];
+  }
+
+  static final _genres = <String, Future<String>>{};
+  static final _genreWaiters = Queue<Completer<void>>();
+  static int _activeGenres = 0;
+
+  Future<String> resolveTrackGenre(Track track) async {
+    final genre = await _genres.putIfAbsent(track.id, () async {
+      final db = LocalDb.instance;
+      if (track.genreVerified) {
+        await db.saveTrackGenre(track.id, track.genre);
+        return track.genre;
+      }
+      final cached = await db.getTrackGenre(track.id);
+      if (cached != null) return cached;
+      // Only visible rows request missing metadata; bound concurrent requests.
+      if (_activeGenres >= 4) {
+        final waiter = Completer<void>();
+        _genreWaiters.add(waiter);
+        await waiter.future;
+      } else {
+        _activeGenres++;
+      }
+      try {
+        final html = await _connectRaw('$_baseUrl/audio/listen/${track.id}');
+        final doc = htmlParser.parse(html);
+        if (doc.querySelector('meta[itemprop="datePublished"]') == null) {
+          throw const FormatException('Invalid track page');
+        }
+        final genre = parseTrackGenre(html);
+        await db.saveTrackGenre(track.id, genre);
+        return genre;
+      } finally {
+        if (_genreWaiters.isNotEmpty) {
+          _genreWaiters.removeFirst().complete();
+        } else {
+          _activeGenres--;
+        }
+      }
+    }).catchError((Object error) {
+      _genres.remove(track.id);
+      throw error;
+    });
+    track.genre = genre;
+    track.genreVerified = true;
+    return genre;
+  }
+
+  String parseTrackGenre(String html) {
+    final doc = htmlParser.parse(html);
+    for (final dt in doc.querySelectorAll('dt')) {
+      if (dt.text.trim().toLowerCase() == 'genre') {
+        final dd = dt.nextElementSibling;
+        if (dd?.localName == 'dd') return dd!.text.trim();
+      }
+    }
+    return '';
+  }
+
+  Future<List<Track>> fetchRecommendedTracks(String trackId) async {
+    final html = await _connectRaw('$_baseUrl/audio/listen/$trackId');
+    return parseRecommendedTracks(html);
+  }
+
+  List<Track> parseRecommendedTracks(String html) {
+    final doc = htmlParser.parse(html);
+    Element? section;
+    for (final pod in doc.querySelectorAll('.pod')) {
+      if (pod.querySelector('.pod-head h2')?.text.trim().toLowerCase() ==
+          'you might also enjoy...') {
+        section = pod;
+        break;
+      }
+    }
+    if (section == null) return const [];
+
+    final tracks = <Track>[];
+    for (final item in section.querySelectorAll('.audio-wrapper')) {
+      final link = item.querySelector('a.item-link');
+      final href = link?.attributes['href'] ?? '';
+      final id = RegExp(r'/audio/listen/(\d+)').firstMatch(href)?.group(1);
+      final title = link?.attributes['title']?.trim();
+      if (id == null || title == null || title.isEmpty) continue;
+
+      final image = link?.querySelector('img');
+      final genre = item
+              .querySelector('.detail-genre')
+              ?.text
+              .replaceFirst(
+                  RegExp(r'^\s*(Song|Loop|Voice|Sound Effect|Podcast)\s*',
+                      caseSensitive: false),
+                  '')
+              .trim() ??
+          '';
+      tracks.add(Track(
+        id: id,
+        title: title,
+        artist: '',
+        genre: genre,
+        genreVerified: genre.isNotEmpty,
+        iconUrl: image?.attributes['src'] ?? '',
+        duration: 0,
+        audioType: 3,
+      ));
+    }
+    return tracks;
+  }
+
+  String _listingGenre(Element item) {
+    final explicit = item.querySelector('.genre, [data-genre]');
+    if (explicit != null) return explicit.text.trim();
+    // Newgrounds' mobile layout puts "Song - Genre" here instead of metadata dd.
+    final mobile = item.querySelector('.detail-description')?.text.trim() ?? '';
+    final match = RegExp(
+            r'^(?:Song|Loop|Voice|Sound Effect|Podcast)\s+-\s*(.*)$',
+            caseSensitive: false)
+        .firstMatch(mobile);
+    if (match != null) return match.group(1)!.trim();
+    for (final dd in item.querySelectorAll('.item-details-meta dd')) {
+      final text = dd.text.trim();
+      if (dd.querySelector('strong') != null ||
+          text.isEmpty ||
+          RegExp(r'\b(views?|listens?|votes?|downloads?|favorites?|faves?)\b',
+                  caseSensitive: false)
+              .hasMatch(text)) continue;
+      return text;
+    }
+    return '';
+  }
+
   static const _baseUrl = 'https://www.newgrounds.com';
   static const _userAgent =
       'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Mobile Safari/537.36';
 
-
-  Future<List<Track>> getFeaturedTracks({int offset = 0, String? genre}) =>
-      _parseTracks(offset == 0 && genre == null
+  Future<List<Track>> getFeaturedTracks({
+    int offset = 0,
+    String? genre,
+    String? sort,
+    String? artistType,
+    String? after,
+    String? before,
+  }) =>
+      _parseTracks(offset == 0 &&
+              genre == null &&
+              sort == null &&
+              artistType == null
           ? '$_baseUrl/audio/featured'
           : '$_baseUrl/audio/featured?'
               '${genre != null ? 'genre=$genre&' : ''}'
               '${offset > 0 ? 'offset=$offset&' : ''}'
+              '${sort != null ? 'sort=$sort&' : ''}'
+              '${artistType != null && artistType != 'all' ? 'artist-type=$artistType&' : ''}'
+              '${after != null ? 'after=$after&' : ''}'
+              '${before != null ? 'before=$before&' : ''}'
               'inner=1');
 
-  Future<List<Track>> getBrowseTracks({int offset = 0, String? genre}) =>
+  Future<List<Track>> getBrowseTracks({
+    int offset = 0,
+    String? genre,
+    String? sort,
+    String? artistType,
+    String? after,
+    String? before,
+  }) =>
       _parseTracks('$_baseUrl/audio/browse?'
           '${genre != null ? 'genre=$genre&' : ''}'
+          '${sort != null ? 'sort=$sort&' : ''}'
+          '${artistType != null && artistType != 'all' ? 'artist-type=$artistType&' : ''}'
+          '${after != null ? 'after=$after&' : ''}'
+          '${before != null ? 'before=$before&' : ''}'
           'offset=$offset&inner=1');
 
-  Future<List<Track>> getPopularTracks({int offset = 0, String? genre}) =>
+  Future<List<Track>> getPopularTracks({
+    int offset = 0,
+    String? genre,
+    String? sort,
+    String? artistType,
+    String? after,
+    String? before,
+  }) =>
       _parseTracks('$_baseUrl/audio/popular?'
           '${genre != null ? 'genre=$genre&' : ''}'
+          '${sort != null ? 'sort=$sort&' : ''}'
+          '${artistType != null && artistType != 'all' ? 'artist-type=$artistType&' : ''}'
+          '${after != null ? 'after=$after&' : ''}'
+          '${before != null ? 'before=$before&' : ''}'
           'offset=$offset&inner=1');
 
   Future<List<Track>> getTopRatedTracks({int offset = 0, String? genre}) =>
@@ -53,40 +248,74 @@ class NgRepository {
   Future<List<Track>> getGenreTracks(String genreId, {int offset = 0}) =>
       getBrowseTracks(offset: offset, genre: genreId);
 
-  Future<(List<Track>, String?)> getArtistTracksPage(
-      String artist, {int page = 1}) async {
+  Future<(List<Track>, String?)> getArtistTracksPage(String artist,
+      {int page = 1}) async {
+    artist = Author.key(artist);
     final url =
         'https://${Uri.encodeComponent(artist.toLowerCase())}.newgrounds.com/audio?page=$page';
+    final response = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': _userAgent,
+        'Accept-Language': 'en-US,en;q=0.9',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+    ).timeout(const Duration(seconds: 20));
+
+    if (response.statusCode != 200) {
+      throw Exception('Could not load $artist (HTTP ${response.statusCode})');
+    }
+    return parseArtistTracksPage(response.body, artist);
+  }
+
+  (List<Track>, String?) parseArtistTracksPage(String body, String artist) {
+    final data = jsonDecode(body) as Map<String, dynamic>;
+    if (data['errors'] != null || data['items'] is! Map) {
+      throw const FormatException('Invalid artist audio response');
+    }
+    final html = (data['items'] as Map)
+        .values
+        .expand((value) => value is List ? value : [value])
+        .whereType<String>()
+        .join('');
+    final tracks = _parseArtistItems(htmlParser.parse(html), artist);
+    final loadMore =
+        (data['load_more'] as String? ?? '').replaceAll(r'\/', '/');
+    final next =
+        RegExp(r'https://[^"\s<>]+[?&]page=\d+').firstMatch(loadMore)?.group(0);
+    return (tracks, next);
+  }
+
+  final _publicationDates = <String, DateTime>{};
+  final _publicationDateLoads = <String, Future<DateTime>>{};
+
+  Future<void> loadPublicationDate(Track track) async {
+    if (track.publishedAt != null) return;
+    final cached = _publicationDates[track.id];
+    if (cached != null) {
+      track.publishedAt = cached;
+      return;
+    }
+
+    final pending = _publicationDateLoads.putIfAbsent(track.id, () async {
+      final html = await _connectRaw('$_baseUrl/audio/listen/${track.id}');
+      final date = htmlParser
+          .parse(html)
+          .querySelector('meta[itemprop="datePublished"]')
+          ?.attributes['content'];
+      final publishedAt = DateTime.tryParse(date ?? '');
+      if (publishedAt == null) {
+        throw const FormatException('Publication date is unavailable');
+      }
+      _publicationDates[track.id] = publishedAt;
+      return publishedAt;
+    });
     try {
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': _userAgent,
-          'Accept-Language': 'en-US,en;q=0.9',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-      ).timeout(const Duration(seconds: 20));
-
-      if (response.statusCode != 200) return (<Track>[], null);
-
-      final json = jsonDecode(response.body) as Map<String, dynamic>;
-
-      final allHtml = ((json['items'] as Map?)?.values ?? [])
-          .expand((v) => v is List ? v : [v])
-          .cast<String>()
-          .join('');
-
-      final doc = htmlParser.parse(allHtml);
-      final tracks = _parseArtistItems(doc, artist);
-
-      final loadMore = json['load_more'] as String? ?? '';
-      final nextUrl = RegExp(r'"(https://[^"]+page=\d+)"')
-          .firstMatch(loadMore)
-          ?.group(1);
-
-      return (tracks, nextUrl);
-    } catch (_) {
-      return (<Track>[], null);
+      track.publishedAt = await pending;
+    } finally {
+      if (identical(_publicationDateLoads[track.id], pending)) {
+        _publicationDateLoads.remove(track.id);
+      }
     }
   }
 
@@ -121,15 +350,16 @@ class NgRepository {
             : '${track.audioBaseUrl}$rawFilename';
         track.mp3Url ??= filename;
       }
-      track.score   = song['score']?.toString()   ?? track.score;
-      track.votes   = song['votes']?.toString()   ?? track.votes;
+      track.score = song['score']?.toString() ?? track.score;
+      track.votes = song['votes']?.toString() ?? track.votes;
       track.listens = song['listens']?.toString() ?? track.listens;
-      track.bpm     = song['bpm']?.toString()     ?? track.bpm;
+      track.bpm = song['bpm']?.toString() ?? track.bpm;
       if ((track.genre.isEmpty) && song['genre'] != null) {
         track.genre = song['genre'] as String;
       }
       final icon = song['icon'] as String?;
-      if (icon != null && icon.contains('ngfiles.com') &&
+      if (icon != null &&
+          icon.contains('ngfiles.com') &&
           !track.iconUrl.contains('ngfiles.com')) {
         track.iconUrl = icon;
       }
@@ -151,6 +381,16 @@ class NgRepository {
     }
   }
 
+  Future<List<Track>> fetchArtistTracks(String artistUrl,
+      {int offset = 0}) async {
+    // artistUrl format: https://USERNAME.newgrounds.com/audio
+    // Add pagination: https://USERNAME.newgrounds.com/audio?page=2
+    final page = offset ~/ 30 + 1;
+    final artist = Uri.parse(artistUrl).host.split('.').first;
+    final (tracks, _) = await getArtistTracksPage(artist, page: page);
+    return tracks;
+  }
+
   Future<Track?> getTrackById(String id) async {
     final clean = id.trim();
     if (int.tryParse(clean) == null) return null;
@@ -169,14 +409,14 @@ class NgRepository {
       return null;
     }
     final doc = htmlParser.parse(html);
-    String? meta(String prop) => doc
-        .querySelector('meta[property="$prop"]')
-        ?.attributes['content'];
+    String? meta(String prop) =>
+        doc.querySelector('meta[property="$prop"]')?.attributes['content'];
 
     final title = _decodeEntities(meta('og:title') ?? '');
     if (title.isEmpty) return null;
-    final artist = _decodeEntities(
-        doc.querySelector('.item-details-main h4 a')?.text.trim() ?? '');
+    final artistElement = doc.querySelector('.item-details-main h4 a');
+    final artist = _decodeEntities(artistElement?.text.trim() ?? '');
+    final artistUrl = artistElement?.attributes['href'];
 
     return Track(
       id: id,
@@ -187,7 +427,7 @@ class NgRepository {
       duration: 0,
       audioType: 3,
       mp3Url: meta('og:audio'),
-    );
+    )..authorUrl = artistUrl;
   }
 
   Future<void> getTrackStats(Track track) => enrichTrack(track);
@@ -231,11 +471,7 @@ class NgRepository {
           : await _connectRaw(url);
       final doc = htmlParser.parse(html);
 
-      final avatar = doc
-              .querySelector('meta[property="og:image"]')
-              ?.attributes['content'] ??
-          doc.querySelector('.user-icon img')?.attributes['src'] ??
-          doc.querySelector('.usericon img')?.attributes['src'];
+      final avatar = parseAuthorAvatar(html);
 
       String? age, gender, country, joinDate, level, exp;
 
@@ -248,16 +484,20 @@ class NgRepository {
           if (value.isEmpty) continue;
           if (label.contains('age')) age = value;
           if (label.contains('gender') || label.contains('sex')) gender = value;
-          if (label.contains('country') || label.contains('location')) country = value;
-          if (label.contains('joined') || label.contains('member since')) joinDate = value;
+          if (label.contains('country') || label.contains('location'))
+            country = value;
+          if (label.contains('joined') || label.contains('member since'))
+            joinDate = value;
           if (label.contains('level')) level = value;
-          if (label.contains('exp') || label.contains('experience')) exp = value;
+          if (label.contains('exp') || label.contains('experience'))
+            exp = value;
         }
       }
 
       String? fans, audioCount;
       for (final btn in doc.querySelectorAll('a.user-header-button')) {
-        final label = btn.querySelector('span')?.text.trim().toUpperCase() ?? '';
+        final label =
+            btn.querySelector('span')?.text.trim().toUpperCase() ?? '';
         final value = btn.querySelector('strong')?.text.trim() ?? '';
         if (label == 'FANS') fans = value;
         if (label == 'AUDIO') audioCount = value;
@@ -283,7 +523,6 @@ class NgRepository {
       return null;
     }
   }
-
 
   NgFaveButton? parseFaveButton(String html, String initFn) {
     if (initFn == 'initFollowButton') {
@@ -332,19 +571,18 @@ class NgRepository {
     if (wrapper == null) return null;
 
     final block = _blockAround(html, wrapper.group(2)!);
-    final isFavoriteKind = block.contains('fave-item') ||
-        block.contains('Add To Favorites');
+    final isFavoriteKind =
+        block.contains('fave-item') || block.contains('Add To Favorites');
     final isFollowKind =
         block.contains('follow-user') || block.contains('FOLLOW');
     final want = initFn == 'initFavoriteButton' ? isFavoriteKind : isFollowKind;
     if (!want) return null;
 
-    final uek =
-        RegExp(r"PHP\.set\('uek',\s*'([^']*)'\)").firstMatch(html)?.group(1) ??
-            RegExp(r'name="userkey" value="([^"]+)"')
-                .firstMatch(html)
-                ?.group(1) ??
-            '';
+    final uek = RegExp(r"PHP\.set\('uek',\s*'([^']*)'\)")
+            .firstMatch(html)
+            ?.group(1) ??
+        RegExp(r'name="userkey" value="([^"]+)"').firstMatch(html)?.group(1) ??
+        '';
 
     return NgFaveButton(
       key: wrapper.group(3)!,
@@ -383,7 +621,8 @@ class NgRepository {
               'X-Requested-With': 'XMLHttpRequest',
               if (csrfToken != null && csrfToken.isNotEmpty)
                 'X-CSRF-TOKEN': csrfToken,
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': referer,
               'Origin': origin,
@@ -397,9 +636,8 @@ class NgRepository {
         debugPrint('[ng] $url -> ${response.statusCode} ${response.body}');
         return null;
       }
-      debugPrint('[ng] fave POST -> 200, тело: ${response.body.length > 400
-          ? response.body.substring(0, 400)
-          : response.body}');
+      debugPrint(
+          '[ng] fave POST -> 200, тело: ${response.body.length > 400 ? response.body.substring(0, 400) : response.body}');
       return parseFaveResponse(response.body, add);
     } catch (e) {
       debugPrint('[ng] $url failed: $e');
@@ -469,7 +707,8 @@ class NgRepository {
         return null;
       }
       final html = pageResp.body;
-      final cookieForPost = _mergeSetCookie(cookie, pageResp.headers['set-cookie']);
+      final cookieForPost =
+          _mergeSetCookie(cookie, pageResp.headers['set-cookie']);
       final button = await _favoriteButton(trackId, cookieForPost, html);
       if (button == null) {
         debugPrint('[ng] кнопки избранного нет на $pageUrl — '
@@ -486,7 +725,8 @@ class NgRepository {
               'Cookie': cookieForPost,
               'X-Requested-With': 'XMLHttpRequest',
               'X-CSRF-TOKEN': _csrfFrom(html) ?? '',
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': pageUrl,
             },
@@ -563,14 +803,13 @@ class NgRepository {
       }
       if (button.active == add) return add;
 
-      final cookieForPost =
-          _mergeSetCookie(cookie, page.headers['set-cookie']);
+      final cookieForPost = _mergeSetCookie(cookie, page.headers['set-cookie']);
 
       if (button.followUrl != null) {
-        final followReferer =
-            page.request?.url?.toString() ?? '$startUrl/';
+        final followReferer = page.request?.url?.toString() ?? '$startUrl/';
         return _postFollow(
-          url: (add ? button.followUrl : button.unfollowUrl) ?? button.followUrl!,
+          url: (add ? button.followUrl : button.unfollowUrl) ??
+              button.followUrl!,
           userkey: button.userkey,
           add: add,
           cookie: cookieForPost,
@@ -651,7 +890,6 @@ class NgRepository {
     }
   }
 
-
   int? parseMyVote(String html) {
     final m = RegExp(
       'id="votebar-\\d+"\\s+value="(\\d+)"\\s+checked',
@@ -672,8 +910,18 @@ class NgRepository {
     final m = RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(s);
     if (m == null) return s;
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
     ];
     final mi = int.tryParse(m.group(2)!) ?? 0;
     if (mi < 1 || mi > 12) return s;
@@ -697,30 +945,33 @@ class NgRepository {
       final icon = RegExp(r'<image href="([^"]+)"').firstMatch(block);
       final time = RegExp(r'<time[^>]*>([^<]+)</time>').firstMatch(block);
       final score = RegExp(r'title="Score: ([\d.]+)').firstMatch(block);
-      final flag =
-          RegExp(r'class="ngicon-25-flag"[^>]*href="([^"]+)"').firstMatch(block);
-      final body = RegExp(r'<div class="review-body[^"]*"[^>]*>([\s\S]*?)</div>')
+      final flag = RegExp(r'class="ngicon-25-flag"[^>]*href="([^"]+)"')
           .firstMatch(block);
+      final body =
+          RegExp(r'<div class="review-body[^"]*"[^>]*>([\s\S]*?)</div>')
+              .firstMatch(block);
 
       NgReviewResponse? response;
-      final respBlock = RegExp(
-              r'<div class="authresponse"[^>]*>([\s\S]*?)</div>\s*</div>')
-          .firstMatch(block);
+      final respBlock =
+          RegExp(r'<div class="authresponse"[^>]*>([\s\S]*?)</div>\s*</div>')
+              .firstMatch(block);
       if (respBlock != null) {
         final seg = respBlock.group(1)!;
-        final rAuthor = RegExp(r'<a href="https://([a-z0-9-]+)\.newgrounds\.com">([^<]+)</a>')
+        final rAuthor = RegExp(
+                r'<a href="https://([a-z0-9-]+)\.newgrounds\.com">([^<]+)</a>')
             .firstMatch(seg);
         final rIcon = RegExp(r'<image href="([^"]+)"').firstMatch(seg);
-        final rBody = RegExp(r'<p>([\s\S]*?)</p>\s*</div>\s*$')
-                .firstMatch(seg) ??
-            RegExp(r'responds:\s*</span>[\s\S]*?<p>([\s\S]*?)</p>')
-                .firstMatch(seg);
+        final rBody =
+            RegExp(r'<p>([\s\S]*?)</p>\s*</div>\s*$').firstMatch(seg) ??
+                RegExp(r'responds:\s*</span>[\s\S]*?<p>([\s\S]*?)</p>')
+                    .firstMatch(seg);
         response = NgReviewResponse(
           authorSlug: rAuthor?.group(1) ?? '',
           author: _decodeEntities(rAuthor?.group(2) ?? ''),
           avatarUrl: rIcon?.group(1) ?? '',
           body: _decodeEntities(
-              rBody?.group(1)?.replaceAll(RegExp(r'<[^>]+>'), ' ').trim() ?? ''),
+              rBody?.group(1)?.replaceAll(RegExp(r'<[^>]+>'), ' ').trim() ??
+                  ''),
         );
       }
 
@@ -749,8 +1000,8 @@ class NgRepository {
       final html = (cookie != null && cookie.isNotEmpty)
           ? await _connectRawAuth(url, cookie)
           : await _connectRaw(url);
-      final pages = RegExp(r'Page</span>\s*\d+\s*of\s*(\d+)')
-              .firstMatch(html)?.group(1);
+      final pages =
+          RegExp(r'Page</span>\s*\d+\s*of\s*(\d+)').firstMatch(html)?.group(1);
       return ReviewsPage(
         items: parseReviews(html),
         page: page,
@@ -805,8 +1056,7 @@ class NgRepository {
     }
   }
 
-  VoteResult? parseVoteResponsePublic(String body) =>
-      _parseVoteResponse(body);
+  VoteResult? parseVoteResponsePublic(String body) => _parseVoteResponse(body);
 
   VoteResult? _parseVoteResponse(String body) {
     try {
@@ -818,12 +1068,13 @@ class NgRepository {
       }
       final score =
           RegExp(r'id="score_number"[^>]*>([\d.]+)<').firstMatch(side);
-      final votes =
-          RegExp(r'<dt>Votes</dt>\s*<dd>([\d,]+)<').firstMatch(side);
+      final votes = RegExp(r'<dt>Votes</dt>\s*<dd>([\d,]+)<').firstMatch(side);
       final waitingM = RegExp(r'Waiting for (\d+) more').firstMatch(side);
       return VoteResult(
         score: double.tryParse(score?.group(1) ?? ''),
-        votes: votes == null ? null : int.tryParse(votes.group(1)!.replaceAll(',', '')),
+        votes: votes == null
+            ? null
+            : int.tryParse(votes.group(1)!.replaceAll(',', '')),
         waiting: waitingM != null,
         pendingVotes:
             waitingM == null ? null : int.tryParse(waitingM.group(1)!),
@@ -833,8 +1084,7 @@ class NgRepository {
     }
   }
 
-  Future<String?> postReview(
-      String trackId, String text, int stars) async {
+  Future<String?> postReview(String trackId, String text, int stars) async {
     final cookie = await NgAuth.getCookie();
     if (cookie == null || cookie.isEmpty) return 'not logged in';
 
@@ -868,7 +1118,8 @@ class NgRepository {
       if (res.statusCode == 200 ||
           (res.statusCode >= 300 && res.statusCode < 400)) {
         final err = RegExp(r'class="[^"]*(error|alert)[^"]*"[^>]*>([^<]+)')
-            .firstMatch(res.body)?.group(2);
+            .firstMatch(res.body)
+            ?.group(2);
         if (err == null) {
           await NgAuth.saveMyReview(trackId, '', text, stars);
           await NgAuth.saveMyVote(trackId, stars);
@@ -888,7 +1139,8 @@ class NgRepository {
     final cookie = await NgAuth.getCookie();
     if (cookie == null || cookie.isEmpty) return null;
     try {
-      final html = await _connectRawAuth('$_baseUrl/audio/listen/$trackId', cookie);
+      final html =
+          await _connectRawAuth('$_baseUrl/audio/listen/$trackId', cookie);
       final review = parseMyReview(html);
       if (review != null) {
         await NgAuth.saveMyReview(trackId, review.id, review.body,
@@ -906,8 +1158,7 @@ class NgRepository {
   }
 
   NgReview? parseMyReview(String html) {
-    final editLink =
-        RegExp(r'href="/reviews/edit/(\d+)"').firstMatch(html);
+    final editLink = RegExp(r'href="/reviews/edit/(\d+)"').firstMatch(html);
     if (editLink == null) return null;
     final reviewId = editLink.group(1)!;
 
@@ -970,7 +1221,8 @@ class NgRepository {
       if (res.statusCode == 200 ||
           (res.statusCode >= 300 && res.statusCode < 400)) {
         final err = RegExp(r'class="[^"]*(error|alert)[^"]*"[^>]*>([^<]+)')
-            .firstMatch(res.body)?.group(2);
+            .firstMatch(res.body)
+            ?.group(2);
         if (err == null) return null;
         return _decodeEntities(err.trim());
       }
@@ -1016,7 +1268,8 @@ class NgRepository {
       if (res.statusCode == 200 ||
           (res.statusCode >= 300 && res.statusCode < 400)) {
         final err = RegExp(r'class="[^"]*(error|alert)[^"]*"[^>]*>([^<]+)')
-            .firstMatch(res.body)?.group(2);
+            .firstMatch(res.body)
+            ?.group(2);
         if (err == null) return null;
         return _decodeEntities(err.trim());
       }
@@ -1032,9 +1285,10 @@ class NgRepository {
     final cookie = await NgAuth.getCookie();
     if (cookie == null || cookie.isEmpty) return 'not logged in';
     try {
-      final res = await _fetch('$_baseUrl/reviews/delete/$reviewId',
-          cookie: cookie);
-      if (res.statusCode == 200 || (res.statusCode >= 300 && res.statusCode < 400)) {
+      final res =
+          await _fetch('$_baseUrl/reviews/delete/$reviewId', cookie: cookie);
+      if (res.statusCode == 200 ||
+          (res.statusCode >= 300 && res.statusCode < 400)) {
         await NgAuth.clearMyReview(trackId);
         await NgAuth.clearMyVote(trackId);
         return null;
@@ -1046,7 +1300,6 @@ class NgRepository {
       return 'network error';
     }
   }
-
 
   String? _userkeyFrom(String html) =>
       RegExp(r"PHP\.set\('uek',\s*'([^']*)'").firstMatch(html)?.group(1) ??
@@ -1079,6 +1332,72 @@ class NgRepository {
     return out;
   }
 
+  /// Reads one audio-favorites page and returns only track IDs and next URL.
+  (List<String>, String?) parseFavoriteAudioPage(String html) {
+    final doc = htmlParser.parse(html);
+    final ids = <String>[];
+    final seen = <String>{};
+    for (final link in doc.querySelectorAll('a[href*="/audio/listen/"]')) {
+      final id = RegExp(r'/audio/listen/(\d+)')
+          .firstMatch(link.attributes['href'] ?? '')
+          ?.group(1);
+      if (id != null && seen.add(id)) ids.add(id);
+    }
+    for (final playback in doc.querySelectorAll('[data-audio-playback]')) {
+      final id = playback.attributes['data-audio-playback'];
+      if (id != null && RegExp(r'^\d+$').hasMatch(id) && seen.add(id)) {
+        ids.add(id);
+      }
+    }
+
+    String? next;
+    for (final script in doc.querySelectorAll('script')) {
+      final text = script.text;
+      if (!text.contains('UsersFavoritesController.loadMore')) continue;
+      final normalized = text.replaceAll(r'\/', '/');
+      next = RegExp(r'https?://[^"\s]+/favorites/audio\?page=\d+')
+          .firstMatch(normalized)
+          ?.group(0)
+          ?.replaceAll(r'\/', '/');
+      if (next != null) break;
+    }
+    return (ids, next);
+  }
+
+  Future<(List<String>, String?)> getFavoriteAudioIdsPage(String username,
+      {int page = 1, String? url}) async {
+    final origin = 'https://${Author.key(username)}.newgrounds.com';
+    final target = url ??
+        (page == 1
+            ? '$origin/favorites/audio'
+            : '$origin/favorites/audio?page=$page');
+    final response = await http.get(Uri.parse(target), headers: {
+      'User-Agent': _userAgent,
+      'Accept-Language': 'en-US,en;q=0.9',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Accept': 'application/json, text/javascript, */*; q=0.01',
+    }).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception('Could not load favorites for $username '
+          '(HTTP ${response.statusCode})');
+    }
+
+    String component = response.body;
+    if (response.headers['content-type']?.contains('application/json') ==
+        true) {
+      final data = jsonDecode(response.body);
+      if (data is! Map || data['component'] is! String) {
+        throw const FormatException('Invalid favorites response');
+      }
+      component = data['component'] as String;
+    }
+    final (ids, next) = parseFavoriteAudioPage(component);
+    return (
+      ids,
+      next == null ? null : Uri.parse(target).resolve(next).toString()
+    );
+  }
+
   Future<Map<String, String>> _fetchVisualLinks(
     String origin,
     int type,
@@ -1089,7 +1408,8 @@ class NgRepository {
     for (var i = 0; i < ids.length; i += 25) {
       var end = i + 25;
       if (end > ids.length) end = ids.length;
-      final batch = ids.sublist(i, end).map((id) => [type, int.parse(id)]).toList();
+      final batch =
+          ids.sublist(i, end).map((id) => [type, int.parse(id)]).toList();
       try {
         final response = await http
             .post(
@@ -1169,6 +1489,16 @@ class NgRepository {
     return out;
   }
 
+  Future<List<Track>> getTrackCardsByIds(List<String> ids) async {
+    if (ids.isEmpty) return [];
+    final partials =
+        await _fetchVisualLinks(_baseUrl, 3, ids.toSet().toList(), null);
+    final html = ids.map((id) => partials[id] ?? '').join();
+    if (html.isEmpty) return [];
+    return _parseSearchItems(
+        htmlParser.parse('<ul class="itemlist">$html</ul>'));
+  }
+
   Future<List<Track>> getNgPlaylistTracks(String playlistId) async {
     final cookie = await NgAuth.getCookie();
     final hasCookie = cookie != null && cookie.isNotEmpty;
@@ -1194,10 +1524,8 @@ class NgRepository {
     if (ids.isEmpty) return [];
 
     final partials = await _fetchVisualLinks(_baseUrl, 3, ids, cookie);
-    final list = ids
-        .map((id) => partials[id] ?? '')
-        .where((s) => s.isNotEmpty)
-        .join();
+    final list =
+        ids.map((id) => partials[id] ?? '').where((s) => s.isNotEmpty).join();
     if (list.isEmpty) return [];
     return _parseSearchItems(
         htmlParser.parse('<ul class="itemlist">$list</ul>'));
@@ -1269,7 +1597,8 @@ class NgRepository {
               'User-Agent': _userAgent,
               'Cookie': cookie,
               'X-Requested-With': 'XMLHttpRequest',
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': '$_baseUrl/audio/listen/$trackId',
             },
@@ -1337,17 +1666,16 @@ class NgRepository {
       if (userkey == null) return false;
 
       String? entryId;
-      for (final m in RegExp(
-              r'data-id="(\d+)"[^>]*data-visual-link="\[3,(\d+)\]"')
-          .allMatches(html)) {
+      for (final m
+          in RegExp(r'data-id="(\d+)"[^>]*data-visual-link="\[3,(\d+)\]"')
+              .allMatches(html)) {
         if (m.group(2) == trackId) {
           entryId = m.group(1);
           break;
         }
       }
-      entryId ??= RegExp(r'playlists/entry/delete/(\d+)')
-          .firstMatch(html)
-          ?.group(1);
+      entryId ??=
+          RegExp(r'playlists/entry/delete/(\d+)').firstMatch(html)?.group(1);
       if (entryId == null) return false;
 
       final response = await http
@@ -1357,7 +1685,8 @@ class NgRepository {
               'User-Agent': _userAgent,
               'Cookie': cookie,
               'X-Requested-With': 'XMLHttpRequest',
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': editUrl,
             },
@@ -1391,7 +1720,8 @@ class NgRepository {
               'User-Agent': _userAgent,
               'Cookie': cookie,
               'X-Requested-With': 'XMLHttpRequest',
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': editUrl,
             },
@@ -1430,7 +1760,8 @@ class NgRepository {
               'User-Agent': _userAgent,
               'Cookie': cookie,
               'X-Requested-With': 'XMLHttpRequest',
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Content-Type':
+                  'application/x-www-form-urlencoded; charset=UTF-8',
               'Accept': 'application/json, text/javascript, */*; q=0.01',
               'Referer': editUrl,
             },
@@ -1449,13 +1780,11 @@ class NgRepository {
     }
   }
 
-
   void _enrichFallback(Track track, String html) {
     try {
       final doc = htmlParser.parse(html);
-      track.mp3Url ??= doc
-          .querySelector('meta[property="og:audio"]')
-          ?.attributes['content'];
+      track.mp3Url ??=
+          doc.querySelector('meta[property="og:audio"]')?.attributes['content'];
     } catch (_) {}
     parseListenDetails(track, html);
   }
@@ -1486,8 +1815,8 @@ class NgRepository {
             case 'votes':
               track.votes = value;
             case 'score':
-              final waiting = RegExp(r'Waiting for (\d+) more')
-                  .firstMatch(value);
+              final waiting =
+                  RegExp(r'Waiting for (\d+) more').firstMatch(value);
               if (waiting != null) {
                 track.votesPending = int.parse(waiting.group(1)!);
                 track.score = null;
@@ -1496,11 +1825,14 @@ class NgRepository {
                 if (m != null) track.score = m.group(1);
               }
             case 'uploaded':
-              final m =
-                  RegExp(r'^([A-Z][a-z]{2,8} \d{1,2}, \d{4})').firstMatch(value);
+              final m = RegExp(r'^([A-Z][a-z]{2,8} \d{1,2}, \d{4})')
+                  .firstMatch(value);
               track.uploaded = m?.group(1) ?? value;
             case 'genre':
-              if (value.isNotEmpty) track.genre = value;
+              if (value.isNotEmpty) {
+                track.genre = value;
+                track.genreVerified = true;
+              }
             case 'file info':
               track.fileInfo = value.replaceAll(RegExp(r'\s*\|\s*'), ' | ');
           }
@@ -1521,8 +1853,8 @@ class NgRepository {
 
       final tags = <String>{};
       for (final a in doc.querySelectorAll('a[href*="match=tags"]')) {
-        final v = Uri.tryParse(a.attributes['href'] ?? '')
-            ?.queryParameters['tags'];
+        final v =
+            Uri.tryParse(a.attributes['href'] ?? '')?.queryParameters['tags'];
         if (v != null && v.isNotEmpty) tags.add(v);
       }
       for (final a in doc.querySelectorAll('a[href*="/audio/browse/tag/"]')) {
@@ -1606,29 +1938,39 @@ class NgRepository {
     final result = <Track>[];
     for (final a in doc.querySelectorAll('a.item-audiosubmission')) {
       final href = a.attributes['href'] ?? '';
-      final id = href.trimRight().split('/').last;
-      if (id.isEmpty) continue;
+      final id = RegExp(r'/audio/listen/(\d+)').firstMatch(href)?.group(1);
+      if (id == null) continue;
 
       final title = (a.attributes['title'] ?? '').trim();
       if (title.isEmpty) continue;
 
       final iconUrl = _imgSrc(a.querySelector('img'));
 
-      final durationStr = a.attributes['data-audio-duration'] ??
-          a.parent?.attributes['data-audio-duration'] ?? '';
+      var wrapper = a;
+      while (wrapper.parent != null &&
+          !wrapper.classes.contains('audio-wrapper')) {
+        wrapper = wrapper.parent!;
+      }
+      final playback = wrapper.querySelector('[data-audio-duration]');
+      final durationStr = playback?.attributes['data-audio-duration'] ?? '';
       final duration = int.tryParse(durationStr) ?? 0;
-      final audioTypeStr = a.attributes['data-audio-type'] ??
-          a.parent?.attributes['data-audio-type'] ?? '';
+      final audioTypeStr = playback?.attributes['data-audio-type'] ?? '';
       final audioType = int.tryParse(audioTypeStr) ?? 3;
 
       result.add(Track(
         id: id,
         title: title,
         artist: artist,
-        genre: '',
+        genre: _listingGenre(a),
+        genreVerified: _listingGenre(a).isNotEmpty,
         iconUrl: iconUrl,
         duration: duration,
         audioType: audioType,
+        authorUrl: 'https://${artist.toLowerCase()}.newgrounds.com/audio',
+        score: RegExp(r'Score:\s*([\d.]+)')
+            .firstMatch(
+                a.querySelector('.star-score')?.attributes['title'] ?? '')
+            ?.group(1),
       ));
     }
     return result;
@@ -1658,37 +2000,58 @@ class NgRepository {
           .trim();
       if (title == null || title.isEmpty) continue;
 
-      final artist = (li.querySelector('.detail-title strong') ??
-              li.querySelector('strong') ??
-              li.querySelector('.item-details-main strong') ??
-              li.querySelector('.detail-author'))
-          ?.text
-          .trim() ??
-          '';
+      final artistElement = li.querySelector('.detail-title strong') ??
+          li.querySelector('strong') ??
+          li.querySelector('.item-details-main strong') ??
+          li.querySelector('.detail-author');
+      final artist = artistElement?.text.trim() ?? '';
 
-      final genreEl = li.querySelector('.detail-description') ??
-          li.querySelector('.genre') ??
-          li.querySelector('.item-details-secondary');
-      final genre = genreEl?.text.trim() ?? '';
+      // Try to find artist link (authorUrl)
+      String? authorUrl;
+      final artistLink = li.querySelector('.detail-title a') ??
+          li.querySelector('.item-details-main a') ??
+          artistElement?.parent;
+      if (artistLink != null && artistLink.localName == 'a') {
+        authorUrl = artistLink.attributes['href'];
+      }
+
+      final genre = _listingGenre(li);
 
       final durationStr = playEl?.attributes['data-audio-duration'] ??
-          li.attributes['data-audio-duration'] ?? '';
+          li.attributes['data-audio-duration'] ??
+          '';
       final duration = int.tryParse(durationStr) ?? 0;
 
       final audioTypeStr = playEl?.attributes['data-audio-type'] ??
-          li.attributes['data-audio-type'] ?? '';
+          li.attributes['data-audio-type'] ??
+          '';
       final audioType = int.tryParse(audioTypeStr) ?? 3;
 
       final iconUrl = _imgSrc(li.querySelector('img'));
+
+      // Parse rating from star-score element
+      String? score;
+      final starScoreEl = li.querySelector('.star-score');
+      if (starScoreEl != null) {
+        final titleAttr = starScoreEl.attributes['title'] ?? '';
+        // Title format: "Score: 4.90/5.00"
+        final scoreMatch = RegExp(r'Score:\s*(\d+\.\d+)').firstMatch(titleAttr);
+        if (scoreMatch != null) {
+          score = scoreMatch.group(1);
+        }
+      }
 
       result.add(Track(
         id: id,
         title: title,
         artist: artist,
         genre: genre,
+        genreVerified: genre.isNotEmpty,
         iconUrl: iconUrl,
         duration: duration,
         audioType: audioType,
+        score: score,
+        authorUrl: authorUrl,
       ));
     }
     return result;
@@ -1710,39 +2073,65 @@ class NgRepository {
       final fullTitle = (a.attributes['title'] ?? '').trim();
       if (fullTitle.isEmpty) continue;
 
-      final artist = li.querySelector('.detail-author')?.text.trim() ??
-          li.querySelector('strong')?.text.trim() ?? '';
+      final artistElement =
+          li.querySelector('.detail-author') ?? li.querySelector('strong');
+      final artist = artistElement?.text.trim() ?? '';
+
+      // Try to find artist link (authorUrl)
+      String? authorUrl;
+      if (artistElement != null) {
+        final artistLink = artistElement.parent;
+        if (artistLink != null && artistLink.localName == 'a') {
+          authorUrl = artistLink.attributes['href'];
+        }
+      }
 
       final actualTitle =
           (fullTitle.contains(' - ') && fullTitle.startsWith(artist))
               ? fullTitle.split(' - ').skip(1).join(' - ').trim()
               : fullTitle;
 
-      final genre = li.querySelector('.detail-description')?.text.trim() ?? '';
+      final genre = _listingGenre(li);
       final durationStr = li
-          .querySelector('[data-audio-duration]')
-          ?.attributes['data-audio-duration'] ?? '';
+              .querySelector('[data-audio-duration]')
+              ?.attributes['data-audio-duration'] ??
+          '';
       final duration = int.tryParse(durationStr) ?? 0;
       final audioTypeStr = li
-          .querySelector('[data-audio-type]')
-          ?.attributes['data-audio-type'] ?? '';
+              .querySelector('[data-audio-type]')
+              ?.attributes['data-audio-type'] ??
+          '';
       final audioType = int.tryParse(audioTypeStr) ?? 3;
 
       final iconUrl = _imgSrc(li.querySelector('img'));
+
+      // Parse rating from star-score element
+      String? score;
+      final starScoreEl = li.querySelector('.star-score');
+      if (starScoreEl != null) {
+        final titleAttr = starScoreEl.attributes['title'] ?? '';
+        // Title format: "Score: 4.90/5.00"
+        final scoreMatch = RegExp(r'Score:\s*(\d+\.\d+)').firstMatch(titleAttr);
+        if (scoreMatch != null) {
+          score = scoreMatch.group(1);
+        }
+      }
 
       result.add(Track(
         id: id,
         title: actualTitle,
         artist: artist,
         genre: genre,
+        genreVerified: genre.isNotEmpty,
         iconUrl: iconUrl,
         duration: duration,
         audioType: audioType,
+        score: score,
+        authorUrl: authorUrl,
       ));
     }
     return result;
   }
-
 
   static Map<String, String> _headers({String? cookie, String? referer}) => {
         'User-Agent': _userAgent,

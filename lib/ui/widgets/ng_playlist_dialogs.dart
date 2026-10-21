@@ -19,7 +19,7 @@ Future<NgNewPlaylist?> showNgCreatePlaylistDialog(
 }) {
   return showDialog<NgNewPlaylist>(
     context: context,
-    barrierColor: ngBlack.withValues(alpha: 0.72),
+    barrierColor: ngBlack.withOpacity(0.72),
     builder: (_) => _CreatePlaylistDialog(
       canUseNg: canUseNg,
       initialTarget: target,
