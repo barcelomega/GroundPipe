@@ -18,7 +18,7 @@ class CacheManager {
 
   /// Icons for transient lists live in the temporary directory and are
   /// dropped once they exceed this budget (oldest first).
-  static const _maxTemporaryArtworkBytes = 32 * 1024 * 1024;
+  static const _maxTemporaryArtworkBytes = 70 * 1024 * 1024;
 
   Set<String> _persistentArtworkIds = const {};
   Future<void>? _persistentSync;

@@ -151,7 +151,7 @@ class NgRepository {
     final tracks = parseRecommendedTracks(html);
     await LocalDb.instance.saveTrackRecommendations(
         trackId, jsonEncode(tracks.map(trackToJson).toList()));
-    await LocalDb.instance.pruneTrackRecommendationsToRecent30();
+    await LocalDb.instance.pruneTrackRecommendationsToRecentSets();
     CacheManager.instance.schedulePermanentArtworkSync();
     return tracks;
   }

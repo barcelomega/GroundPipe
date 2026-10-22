@@ -312,6 +312,8 @@ class LocalDb {
     )
   ''';
 
+  static const _maxTrackRecommendationSets = 15;
+
   static const _trackRecommendationsTable = '''
     CREATE TABLE IF NOT EXISTS track_recommendations (
       track_id TEXT PRIMARY KEY,
@@ -419,7 +421,7 @@ class LocalDb {
       DELETE FROM track_recommendations
       WHERE track_id NOT IN (
         SELECT track_id FROM track_recommendations
-        ORDER BY fetched_at DESC LIMIT 30
+        ORDER BY fetched_at DESC LIMIT $_maxTrackRecommendationSets
       )
     ''');
     return rows.isEmpty ? null : rows.first['tracks_json'] as String;
@@ -440,7 +442,7 @@ class LocalDb {
         DELETE FROM track_recommendations
         WHERE track_id NOT IN (
           SELECT track_id FROM track_recommendations
-          ORDER BY fetched_at DESC LIMIT 30
+          ORDER BY fetched_at DESC LIMIT $_maxTrackRecommendationSets
         )
       ''');
     });
@@ -522,13 +524,13 @@ class LocalDb {
     ''');
   }
 
-  Future<void> pruneTrackRecommendationsToRecent30() async {
+  Future<void> pruneTrackRecommendationsToRecentSets() async {
     final d = await db;
     await d.rawDelete('''
       DELETE FROM track_recommendations
       WHERE track_id NOT IN (
         SELECT track_id FROM track_recommendations
-        ORDER BY fetched_at DESC LIMIT 30
+        ORDER BY fetched_at DESC LIMIT $_maxTrackRecommendationSets
       )
     ''');
   }
@@ -539,7 +541,7 @@ class LocalDb {
       'track_recommendations',
       columns: ['tracks_json'],
       orderBy: 'fetched_at DESC',
-      limit: 30,
+      limit: _maxTrackRecommendationSets,
     );
     final ids = <String>{};
     for (final row in rows) {
