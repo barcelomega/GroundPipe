@@ -15,6 +15,9 @@ import 'viewmodel/recommendations_viewmodel.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Cap Flutter's decoded image cache; metadata LRUs in NgRepository have
+  // separate small entry limits.
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 384 * 1024 * 1024;
   runApp(NgMusicApp(handler: NgAudioHandler()));
 }
 

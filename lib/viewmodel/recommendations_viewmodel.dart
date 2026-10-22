@@ -9,6 +9,7 @@ import '../data/model/track.dart';
 import '../data/model/playlist.dart';
 import '../data/repository/local_db.dart';
 import '../data/repository/ng_repository.dart';
+import '../data/repository/cache_manager.dart';
 import 'library_viewmodel.dart';
 
 class RecommendationsViewModel extends ChangeNotifier {
@@ -308,6 +309,7 @@ class RecommendationsViewModel extends ChangeNotifier {
     final source =
         selectedPlaylistId == null ? 'likes' : 'playlist_$selectedPlaylistId';
     final rows = await _db.getRecommendationScores(limit: 50, source: source);
+    final usedSources = await _db.getRecommendationSourcesInUse();
     final ids = rows
         .map((row) => row['track_id'] as String)
         .where((id) => !liked.contains(id) && !library.isBlacklisted(id))
@@ -334,6 +336,61 @@ class RecommendationsViewModel extends ChangeNotifier {
     }
     _candidateTracks = ids.map((id) => byId[id]).whereType<Track>().toList();
     _applyLibraryFilters();
+    await _db.pruneRecommendationCards(source, tracks.map((t) => t.id).toSet());
+    if (fetchCards) unawaited(_cacheRecommendationArtwork(source, tracks));
+    final usedAuthorKeys = <String>{};
+    final likes = library.stagedLikes.map((like) => like.toTrack()).toList();
+    if (usedSources.contains('likes') || source == 'likes') {
+      for (final track in likes) {
+        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+        if (author.isNotEmpty && author != 'unknown') {
+          usedAuthorKeys.add(author);
+        }
+      }
+    }
+    final playlists = await _db.getPlaylists();
+    for (final playlist in playlists.where((item) => item.id != null)) {
+      final sourceKey = 'playlist_${playlist.id}';
+      if (!usedSources.contains(sourceKey) && sourceKey != source) continue;
+      final playlistTracks = (await _db.getPlaylistTracks(playlist.id!))
+          .map((item) => item.toTrack());
+      for (final track in playlistTracks) {
+        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+        if (author.isNotEmpty && author != 'unknown') {
+          usedAuthorKeys.add('$sourceKey:$author');
+        }
+      }
+    }
+    if (selectedPlaylistId != null) {
+      final sourceKey = 'playlist_$selectedPlaylistId';
+      final selectedTracks = (await _db.getPlaylistTracks(selectedPlaylistId!))
+          .map((item) => item.toTrack());
+      for (final track in selectedTracks) {
+        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+        if (author.isNotEmpty && author != 'unknown') {
+          usedAuthorKeys.add('$sourceKey:$author');
+        }
+      }
+    }
+    await _db.pruneRecommendationAuthors(usedAuthorKeys);
+    await _db.pruneCardsWithoutRecommendationScores();
+    final currentArtworkIds = await _db.getRecommendationCardTrackIds();
+    currentArtworkIds.addAll(await _db.getRecentRecommendationArtworkIds());
+    await CacheManager.instance.pruneRecommendationIcons(currentArtworkIds);
+  }
+
+  Future<void> _cacheRecommendationArtwork(
+      String source, List<Track> visibleTracks) async {
+    for (final track in visibleTracks) {
+      try {
+        final path = await CacheManager.instance.cacheRecommendationIcon(track);
+        if (path != null) {
+          await _db.saveRecommendationCards(source, {
+            track.id: jsonEncode(NgRepository.trackToJson(track)),
+          });
+        }
+      } catch (_) {}
+    }
   }
 
   String _authorDisplayName(String cacheKey, List<Track> sourceTracks) {

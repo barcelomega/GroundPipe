@@ -119,6 +119,52 @@ class CacheManager {
     return _cacheIcon(track, cacheDir);
   }
 
+  /// Persist the exact recommendation artwork, caching the reduced preview.
+  Future<String?> cacheRecommendationIcon(Track track) async {
+    final cacheDir = await getCacheDir();
+    final icon = await _cacheIcon(
+      track,
+      cacheDir,
+      suffix: 'recommendation_icon',
+    );
+    if (icon == null) return null;
+    final d = await _db.db;
+    final rows = await d.query('cached_tracks',
+        columns: ['track_id'],
+        where: 'track_id = ?',
+        whereArgs: [track.id],
+        limit: 1);
+    if (rows.isNotEmpty) return icon;
+    track.iconUrl = icon;
+    return icon;
+  }
+
+  /// Remove recommendation-only preview files that no current source uses.
+  Future<void> pruneRecommendationIcons(Set<String> usedTrackIds) async {
+    final cacheDir = await getCacheDir();
+    final pinnedTrackIds = await _db.getCachedTrackIds();
+    final retainedIds = {...usedTrackIds, ...pinnedTrackIds};
+    await for (final entity in cacheDir.list()) {
+      if (entity is! File) continue;
+      final match = RegExp(r'^(\d+)_recommendation_icon\.(webp|jpg|png)$')
+          .firstMatch(path.basename(entity.path));
+      if (match == null || retainedIds.contains(match.group(1))) continue;
+      try {
+        await entity.delete();
+      } catch (_) {}
+    }
+    final cachedAudioIds = await _db.getCachedTrackIds();
+    await for (final entity in cacheDir.list()) {
+      if (entity is! File) continue;
+      final match = RegExp(r'^(\d+)_art\.(webp|jpg|png)$')
+          .firstMatch(path.basename(entity.path));
+      if (match == null || cachedAudioIds.contains(match.group(1))) continue;
+      try {
+        await entity.delete();
+      } catch (_) {}
+    }
+  }
+
   /// Cache a track
   Future<String?> cacheTrack(
     Track track, {
@@ -229,7 +275,11 @@ class CacheManager {
 
   /// Save the listing preview (the round disc) for compact widgets such as
   /// the mini player. Never use the full square cover here.
-  Future<String?> _cacheIcon(Track track, Directory cacheDir) async {
+  Future<String?> _cacheIcon(
+    Track track,
+    Directory cacheDir, {
+    String suffix = 'icon',
+  }) async {
     if (track.hasLocalIcon) return track.localIconPath;
     for (final ext in ['webp', 'jpg', 'png']) {
       final existing = File(path.join(cacheDir.path, '${track.id}_icon.$ext'));
@@ -245,7 +295,7 @@ class CacheManager {
       if (remote.isEmpty || !remote.contains('://')) continue;
       final clean = remote.split('?').first;
       final ext = _extensionFor(clean);
-      final file = File(path.join(cacheDir.path, '${track.id}_icon.$ext'));
+      final file = File(path.join(cacheDir.path, '${track.id}_$suffix.$ext'));
       if (await _downloadArtwork(clean, file)) return file.path;
     }
     return null;

@@ -31,21 +31,42 @@ class NgRateLimitException implements Exception {
 }
 
 class NgRepository {
-  static final _authorAvatars = <String, Future<String?>>{};
+  static const _memoryCacheMaxEntries = 2048;
+  static final _authorAvatars = LinkedHashMap<String, Future<String?>>();
+
+  static void _touchMemoryCache<K, V>(LinkedHashMap<K, V> cache, K key) {
+    final value = cache.remove(key);
+    if (value != null) cache[key] = value;
+  }
+
+  static void _putMemoryCache<K, V>(LinkedHashMap<K, V> cache, K key, V value) {
+    cache.remove(key);
+    cache[key] = value;
+    while (cache.length > _memoryCacheMaxEntries) {
+      cache.remove(cache.keys.first);
+    }
+  }
 
   Future<String?> getAuthorAvatar(String author) {
     final username = Author.key(author);
-    return _authorAvatars.putIfAbsent(username, () async {
+    _touchMemoryCache(_authorAvatars, username);
+    final pending = _authorAvatars.putIfAbsent(username, () async {
       try {
         final html = await _connectRaw('https://$username.newgrounds.com');
         final avatar = parseAuthorAvatar(html);
-        if (avatar == null || avatar.isEmpty) _authorAvatars.remove(username);
+        if (avatar == null || avatar.isEmpty) {
+          _authorAvatars.remove(username);
+        } else {
+          _putMemoryCache(_authorAvatars, username, Future.value(avatar));
+        }
         return avatar;
       } catch (_) {
         _authorAvatars.remove(username);
         return null;
       }
     });
+    _putMemoryCache(_authorAvatars, username, pending);
+    return pending;
   }
 
   String? parseAuthorAvatar(String html) {
@@ -59,11 +80,12 @@ class NgRepository {
         doc.querySelector('.user-icon img, .usericon img')?.attributes['src'];
   }
 
-  static final _genres = <String, Future<String>>{};
+  static final _genres = LinkedHashMap<String, Future<String>>();
   static final _genreWaiters = Queue<Completer<void>>();
   static int _activeGenres = 0;
 
   Future<String> resolveTrackGenre(Track track) async {
+    _touchMemoryCache(_genres, track.id);
     final genre = await _genres.putIfAbsent(track.id, () async {
       final db = LocalDb.instance;
       if (track.genreVerified) {
@@ -100,6 +122,7 @@ class NgRepository {
       _genres.remove(track.id);
       throw error;
     });
+    _putMemoryCache(_genres, track.id, Future.value(genre));
     track.genre = genre;
     track.genreVerified = true;
     return genre;
@@ -127,6 +150,7 @@ class NgRepository {
     final tracks = parseRecommendedTracks(html);
     await LocalDb.instance.saveTrackRecommendations(
         trackId, jsonEncode(tracks.map(trackToJson).toList()));
+    await LocalDb.instance.pruneTrackRecommendationsToRecent30();
     return tracks;
   }
 
@@ -364,17 +388,19 @@ class NgRepository {
         'https://${artist.toLowerCase()}.newgrounds.com/audio',
       ).resolve(url).toString();
 
-  final _publicationDates = <String, DateTime>{};
-  final _publicationDateLoads = <String, Future<DateTime>>{};
+  final _publicationDates = LinkedHashMap<String, DateTime>();
+  final _publicationDateLoads = LinkedHashMap<String, Future<DateTime>>();
 
   Future<void> loadPublicationDate(Track track) async {
     if (track.publishedAt != null) return;
     final cached = _publicationDates[track.id];
     if (cached != null) {
+      _touchMemoryCache(_publicationDates, track.id);
       track.publishedAt = cached;
       return;
     }
 
+    _touchMemoryCache(_publicationDateLoads, track.id);
     final pending = _publicationDateLoads.putIfAbsent(track.id, () async {
       final html = await _connectRaw('$_baseUrl/audio/listen/${track.id}');
       final date = htmlParser
@@ -385,9 +411,10 @@ class NgRepository {
       if (publishedAt == null) {
         throw const FormatException('Publication date is unavailable');
       }
-      _publicationDates[track.id] = publishedAt;
+      _putMemoryCache(_publicationDates, track.id, publishedAt);
       return publishedAt;
     });
+    _putMemoryCache(_publicationDateLoads, track.id, pending);
     try {
       track.publishedAt = await pending;
     } finally {

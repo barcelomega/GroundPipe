@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
@@ -399,21 +401,148 @@ class LocalDb {
 
   Future<String?> getTrackRecommendations(String trackId) async {
     final d = await db;
-    final rows = await d.query('track_recommendations',
-        columns: ['tracks_json'], where: 'track_id = ?', whereArgs: [trackId]);
+    final rows = await d.query(
+      'track_recommendations',
+      columns: ['tracks_json'],
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+    if (rows.isNotEmpty) {
+      await d.update(
+        'track_recommendations',
+        {'fetched_at': DateTime.now().millisecondsSinceEpoch},
+        where: 'track_id = ?',
+        whereArgs: [trackId],
+      );
+    }
+    await d.rawDelete('''
+      DELETE FROM track_recommendations
+      WHERE track_id NOT IN (
+        SELECT track_id FROM track_recommendations
+        ORDER BY fetched_at DESC LIMIT 30
+      )
+    ''');
     return rows.isEmpty ? null : rows.first['tracks_json'] as String;
   }
 
   Future<void> saveTrackRecommendations(String trackId, String json) async {
     final d = await db;
-    await d.insert(
-        'track_recommendations',
-        {
-          'track_id': trackId,
-          'tracks_json': json,
-          'fetched_at': DateTime.now().millisecondsSinceEpoch,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await d.transaction((txn) async {
+      await txn.insert(
+          'track_recommendations',
+          {
+            'track_id': trackId,
+            'tracks_json': json,
+            'fetched_at': DateTime.now().millisecondsSinceEpoch,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.rawDelete('''
+        DELETE FROM track_recommendations
+        WHERE track_id NOT IN (
+          SELECT track_id FROM track_recommendations
+          ORDER BY fetched_at DESC LIMIT 30
+        )
+      ''');
+    });
+  }
+
+  Future<Set<String>> getRecommendationCardTrackIds() async {
+    final d = await db;
+    final rows = await d.query('recommendation_cards', columns: ['track_id']);
+    return rows.map((row) => row['track_id'] as String).toSet();
+  }
+
+  Future<Set<String>> getCachedTrackIds() async {
+    final d = await db;
+    final rows = await d.query('cached_tracks', columns: ['track_id']);
+    return rows.map((row) => row['track_id'] as String).toSet();
+  }
+
+  Future<Set<String>> getRecommendationSourcesInUse() async {
+    final d = await db;
+    final rows = await d.rawQuery(
+      'SELECT DISTINCT source FROM recommendation_source_scores',
+    );
+    return rows.map((row) => row['source'] as String).toSet();
+  }
+
+  Future<void> pruneRecommendationCards(
+      String source, Set<String> keepIds) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      if (keepIds.isEmpty) {
+        await txn.delete('recommendation_cards',
+            where: 'source = ?', whereArgs: [source]);
+        return;
+      }
+      final placeholders = List.filled(keepIds.length, '?').join(',');
+      await txn.delete(
+        'recommendation_cards',
+        where: 'source = ? AND track_id NOT IN ($placeholders)',
+        whereArgs: [source, ...keepIds],
+      );
+    });
+  }
+
+  Future<void> pruneCardsWithoutRecommendationScores() async {
+    final d = await db;
+    await d.rawDelete('''
+      DELETE FROM recommendation_cards
+      WHERE NOT EXISTS (
+        SELECT 1 FROM recommendation_source_scores AS scores
+        WHERE scores.source = recommendation_cards.source
+          AND scores.track_id = recommendation_cards.track_id
+      )
+    ''');
+  }
+
+  Future<void> pruneTrackRecommendationsToRecent30() async {
+    final d = await db;
+    await d.rawDelete('''
+      DELETE FROM track_recommendations
+      WHERE track_id NOT IN (
+        SELECT track_id FROM track_recommendations
+        ORDER BY fetched_at DESC LIMIT 30
+      )
+    ''');
+  }
+
+  Future<Set<String>> getRecentRecommendationArtworkIds() async {
+    final d = await db;
+    final rows = await d.query(
+      'track_recommendations',
+      columns: ['tracks_json'],
+      orderBy: 'fetched_at DESC',
+      limit: 30,
+    );
+    final ids = <String>{};
+    for (final row in rows) {
+      try {
+        final decoded = jsonDecode(row['tracks_json'] as String);
+        if (decoded is! List) continue;
+        for (final track in decoded.whereType<Map>()) {
+          final id = track['id'];
+          if (id is String && id.isNotEmpty) ids.add(id);
+        }
+      } catch (_) {}
+    }
+    return ids;
+  }
+
+  Future<void> pruneRecommendationAuthors(Set<String> usedAuthorKeys) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final rows =
+          await txn.query('recommendation_author_state', columns: ['username']);
+      for (final row in rows) {
+        final username = row['username'] as String;
+        if (usedAuthorKeys.contains(username)) continue;
+        await txn.delete('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]);
+        await txn.delete('recommendation_author_state',
+            where: 'username = ?', whereArgs: [username]);
+      }
+    });
   }
 
   Future<Map<String, String>> getRecommendationCards(String source) async {
@@ -475,6 +604,13 @@ class LocalDb {
         await txn.update(table, {'genre': genre},
             where: 'track_id = ?', whereArgs: [id]);
       }
+      await txn.rawDelete('''
+        DELETE FROM track_genres
+        WHERE track_id NOT IN (
+          SELECT track_id FROM track_genres
+          ORDER BY rowid DESC LIMIT 5000
+        )
+      ''');
     });
   }
 
@@ -806,7 +942,36 @@ class LocalDb {
 
   Future<void> deletePlaylist(int id) async {
     final d = await db;
+    final recommendationSource = 'playlist_$id';
+    final authorPrefix = '$recommendationSource:';
     await d.transaction((txn) async {
+      final authorRows = await txn.query(
+        'recommendation_author_state',
+        columns: ['username'],
+        where: 'substr(username, 1, ?) = ?',
+        whereArgs: [authorPrefix.length, authorPrefix],
+      );
+      for (final row in authorRows) {
+        final username = row['username'] as String;
+        await txn.delete('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]);
+        await txn.delete('recommendation_author_state',
+            where: 'username = ?', whereArgs: [username]);
+      }
+      await txn.delete('recommendation_source_scores',
+          where: 'source = ?', whereArgs: [recommendationSource]);
+      await txn.delete('recommendation_cards',
+          where: 'source = ?', whereArgs: [recommendationSource]);
+      await txn.delete('recommendation_source_state',
+          where: 'source = ?', whereArgs: [recommendationSource]);
+      await txn.rawDelete('''
+        DELETE FROM recommendation_cards
+        WHERE NOT EXISTS (
+          SELECT 1 FROM recommendation_source_scores AS scores
+          WHERE scores.source = recommendation_cards.source
+            AND scores.track_id = recommendation_cards.track_id
+        )
+      ''');
       await txn
           .delete('playlist_tracks', where: 'playlist_id = ?', whereArgs: [id]);
       await txn.delete('playlists', where: 'id = ?', whereArgs: [id]);
