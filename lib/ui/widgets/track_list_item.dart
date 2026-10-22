@@ -40,7 +40,7 @@ class TrackListItem extends StatelessWidget {
     return Material(
       color: isCurrent && highlightCurrentTrack
           ? Color.alphaBlend(
-              colorScheme.onSurface.withOpacity(0.08),
+              colorScheme.primary.withOpacity(0.14),
               colorScheme.surface,
             )
           : Colors.transparent,

@@ -5,6 +5,7 @@ import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/track_list_item.dart';
 import '../widgets/track_context_menu.dart';
+import '../widgets/mini_player.dart';
 import '../../viewmodel/authors_viewmodel.dart';
 
 class StagedLikesScreen extends StatefulWidget {
@@ -87,6 +88,12 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
                   onLongPress: () => showTrackContextMenu(context, track),
                 );
               },
+            ),
+      bottomNavigationBar: vm.currentTrack == null
+          ? null
+          : const SafeArea(
+              top: false,
+              child: MiniPlayer(),
             ),
     );
   }
