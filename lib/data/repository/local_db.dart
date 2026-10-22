@@ -989,6 +989,14 @@ class LocalDb {
     return rows.map(PlaylistTrack.fromMap).toList();
   }
 
+  Future<Set<String>> getAllPlaylistTrackIds() async {
+    final d = await db;
+    final rows = await d.rawQuery(
+      'SELECT DISTINCT track_id FROM playlist_tracks',
+    );
+    return rows.map((row) => row['track_id'] as String).toSet();
+  }
+
   Future<int> trackCountForPlaylist(int playlistId) async {
     final d = await db;
     final r = await d.rawQuery(

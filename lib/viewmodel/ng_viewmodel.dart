@@ -457,9 +457,7 @@ class NgViewModel extends ChangeNotifier {
 
       final artworkUri = cachedArtwork != null
           ? Uri.file(cachedArtwork)
-          : Uri.tryParse(track.hasLocalIcon
-              ? Uri.file(track.localIconPath).toString()
-              : track.coverUrl);
+          : Uri.tryParse(track.coverUrl);
       if (cachedPath != null) {
         // Use cached file
         await audioHandler.playUrl(

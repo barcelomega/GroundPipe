@@ -156,8 +156,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final localArtwork = track.localCoverPath ??
-        (track.hasLocalIcon ? track.localIconPath : null);
+    final localArtwork = track.localCoverPath;
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
@@ -286,7 +285,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                         ),
                                         errorWidget: (_, __, ___) =>
                                             CachedNetworkImage(
-                                          imageUrl: track.aIconUrl,
+                                          imageUrl: track.remoteIconUrl,
                                           fit: BoxFit.cover,
                                           errorWidget: (_, __, ___) => Center(
                                             child: Icon(

@@ -178,7 +178,6 @@ class Track {
   String get coverUrl {
     final local = localCoverPath;
     if (local != null && local.isNotEmpty) return local;
-    if (hasLocalIcon) return iconUrl;
     return remoteCoverUrl;
   }
 

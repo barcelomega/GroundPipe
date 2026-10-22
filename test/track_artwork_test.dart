@@ -47,10 +47,18 @@ void main() {
       iconUrl: 'https://aicon.ngfiles.com/1629/1629574_full.webp?f=1',
     );
     expect(enriched.aIconUrl,
-        'https://aicon.ngfiles.com/1629/1629574_medium.webp');
+        'https://aicon.ngfiles.com/1629/1629574_medium.webp?f=1');
     expect(enriched.previewIconUrl,
-        'https://aicon.ngfiles.com/1629/1629574_medium.webp');
+        'https://aicon.ngfiles.com/1629/1629574_medium.webp?f=1');
     expect(enriched.remoteCoverUrl,
+        'https://aicon.ngfiles.com/1629/1629574_cover.webp');
+  });
+
+  test('cached listing preview does not replace the full-size cover', () {
+    final cachedPreview = track(iconUrl: '/cache/1629574_icon.webp');
+
+    expect(cachedPreview.aIconUrl, '/cache/1629574_icon.webp');
+    expect(cachedPreview.coverUrl,
         'https://aicon.ngfiles.com/1629/1629574_cover.webp');
   });
 }

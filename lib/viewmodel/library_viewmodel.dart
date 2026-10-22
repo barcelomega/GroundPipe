@@ -17,6 +17,7 @@ class LibraryViewModel extends ChangeNotifier {
 
   List<Playlist> playlists = [];
   List<StagedLike> stagedLikes = [];
+  Set<String> playlistTrackIds = {};
   bool isLoading = false;
 
   String? lastError;
@@ -49,6 +50,7 @@ class LibraryViewModel extends ChangeNotifier {
 
     playlists = await _db.getPlaylists();
     stagedLikes = await _db.getStagedLikes();
+    playlistTrackIds = await _db.getAllPlaylistTrackIds();
 
     _stagedLikeIds
       ..clear()

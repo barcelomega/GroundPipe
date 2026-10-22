@@ -81,6 +81,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
               if (widget.compact) widget.track.aIconUrl
               else widget.track.coverUrl,
               ...widget.track.artworkUrls,
+              if (!widget.compact) widget.track.remoteIconUrl,
             }.where((url) => url.contains('://')).toList();
             if (urls.isEmpty) return fallback;
             return _FallbackArtwork(
@@ -104,7 +105,6 @@ class _TrackArtworkState extends State<TrackArtwork> {
       if (cover != null && cover.isNotEmpty) return cover;
       return CacheManager.instance.getCachedArtworkPath(track.id);
     }
-    if (track.hasLocalIcon) return track.localIconPath;
     final cover = track.localCoverPath;
     if (cover != null && cover.isNotEmpty) return cover;
     return CacheManager.instance.getCachedArtworkPath(track.id);

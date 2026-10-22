@@ -409,7 +409,9 @@ class RecommendationsViewModel extends ChangeNotifier {
     final liked = library.stagedLikes.map((item) => item.trackId).toSet();
     tracks = _candidateTracks
         .where((track) =>
-            !liked.contains(track.id) && !library.isBlacklisted(track.id))
+            !liked.contains(track.id) &&
+            !library.playlistTrackIds.contains(track.id) &&
+            !library.isBlacklisted(track.id))
         .toList();
     notifyListeners();
   }
