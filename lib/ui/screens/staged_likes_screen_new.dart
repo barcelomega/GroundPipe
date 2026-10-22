@@ -1,11 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../data/model/track.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/track_list_item.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 import '../../viewmodel/authors_viewmodel.dart';
 
 class StagedLikesScreen extends StatefulWidget {
@@ -85,62 +84,10 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
                     vm.setQueueContext(trackList);
                     vm.playTrack(track);
                   },
-                  onLongPress: () => _showTrackMenu(context, track, like),
+                  onLongPress: () => showTrackContextMenu(context, track),
                 );
               },
             ),
     );
-  }
-
-  void _showTrackMenu(BuildContext context, Track track, stagedLike) {
-    final lvm = context.read<LibraryViewModel>();
-
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Add to playlist'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showAddToPlaylist(context, track);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.favorite_border),
-              title: const Text('Remove from Likes'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await lvm.removeStagedLike(track.id);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Removed from Likes')),
-                  );
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showAddToPlaylist(BuildContext context, Track track) async {
-    final lvm = context.read<LibraryViewModel>();
-    final playlist = await showAddToPlaylistSheet(
-      context,
-      tracks: [track],
-      lvm: lvm,
-    );
-    if (playlist == null || !context.mounted) return;
-    await lvm.addTrackToPlaylist(playlist, track);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Added to ${playlist.name}')),
-      );
-    }
   }
 }

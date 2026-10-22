@@ -11,7 +11,7 @@ import '../../data/model/author.dart';
 import '../../viewmodel/authors_viewmodel.dart';
 import '../widgets/author_actions.dart';
 import '../widgets/author_avatar.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 
 class ArtistScreen extends StatefulWidget {
   final String authorUrl;
@@ -212,7 +212,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
                                 vm.setQueueContext(visible);
                                 vm.playTrack(track);
                               },
-                              onLongPress: () => _showTrackMenu(context, track),
+                              onLongPress: () =>
+                                  showTrackContextMenu(context, track),
                             );
                           },
                         ),
@@ -223,84 +224,5 @@ class _ArtistScreenState extends State<ArtistScreen> {
               child: MiniPlayer(artistLinkEnabled: false),
             ),
     );
-  }
-
-  void _showTrackMenu(BuildContext context, Track track) {
-    final lvm = context.read<LibraryViewModel>();
-
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (lvm.isStagedLike(track.id))
-              ListTile(
-                leading: const Icon(Icons.favorite),
-                title: const Text('Remove from Likes'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await lvm.removeStagedLike(track.id);
-                },
-              )
-            else
-              ListTile(
-                leading: const Icon(Icons.favorite_border),
-                title: const Text('Add to Likes'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  await lvm.addStagedLike(track);
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Send to Playlist'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showPlaylistPicker(context, track);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.block),
-              title: const Text('Blacklist'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await lvm.addToBlacklist(track);
-                setState(() {
-                  _tracks.removeWhere((t) => t.id == track.id);
-                });
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Blacklisted: ${track.title}'),
-                      action: SnackBarAction(
-                        label: 'Undo',
-                        onPressed: () => lvm.removeFromBlacklist(track.id),
-                      ),
-                    ),
-                  );
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showPlaylistPicker(BuildContext context, Track track) async {
-    final lvm = context.read<LibraryViewModel>();
-    final playlist = await showAddToPlaylistSheet(
-      context,
-      tracks: [track],
-      lvm: lvm,
-    );
-    if (playlist == null || !context.mounted) return;
-    await lvm.addTrackToPlaylist(playlist, track);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Added to "${playlist.name}"')),
-      );
-    }
   }
 }

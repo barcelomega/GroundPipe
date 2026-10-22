@@ -5,6 +5,7 @@ import '../../data/model/track.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/track_list_item.dart';
+import '../widgets/track_context_menu.dart';
 
 class CachedTracksScreen extends StatefulWidget {
   const CachedTracksScreen({super.key});
@@ -163,37 +164,9 @@ class _CachedTracksScreenState extends State<CachedTracksScreen> {
             vm.setQueueContext(cachedTracks);
             vm.playTrack(track);
           },
-          onLongPress: () => _showTrackMenu(context, track),
+          onLongPress: () => showTrackContextMenu(context, track),
         );
       },
-    );
-  }
-
-  void _showTrackMenu(BuildContext context, Track track) {
-    final lvm = context.read<LibraryViewModel>();
-
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.push_pin_outlined),
-              title: const Text('Remove from cache'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await lvm.removeCachedTrack(track.id);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Removed from cache')),
-                  );
-                }
-              },
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

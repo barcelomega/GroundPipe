@@ -3,10 +3,8 @@ import 'package:provider/provider.dart';
 
 import '../../data/model/track.dart';
 import '../../services/track_downloader.dart';
-import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../theme/ng_theme.dart';
-import '../widgets/add_to_playlist_sheet.dart';
 import '../widgets/track_context_menu.dart';
 import '../widgets/ng_retro.dart';
 import 'player_screen.dart';
@@ -35,7 +33,6 @@ class _ArtistTrackRowState extends State<ArtistTrackRow> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
-    final lvm = context.watch<LibraryViewModel>();
     final t = widget.track;
     final isActive = vm.currentTrack?.id == t.id;
 
@@ -48,8 +45,7 @@ class _ArtistTrackRowState extends State<ArtistTrackRow> {
       artist: '',
       playing: isActive,
       paused: isActive && !vm.isPlaying,
-      onIconTap: () =>
-          isActive ? vm.togglePlayPause() : vm.playTrack(t),
+      onIconTap: () => isActive ? vm.togglePlayPause() : vm.playTrack(t),
       onTap: () {
         vm.setQueueContext(widget.allTracks);
         vm.playTrack(t);
@@ -71,9 +67,6 @@ class _ArtistTrackRowState extends State<ArtistTrackRow> {
             onTap: () => showTrackContextMenu(
               context,
               t,
-              showAddToPlaylist: true,
-              showLike: true,
-              showDislike: true,
             ),
           ),
           NgIconButton(

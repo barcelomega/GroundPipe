@@ -8,7 +8,7 @@ import '../../data/model/ng_audio_genres.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../widgets/ng_drawer.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 import '../widgets/track_list_item.dart';
 import 'captcha_bypass_screen.dart';
 
@@ -512,7 +512,7 @@ class _DiscoverScreenState extends State<DiscoverScreen>
           vm.setQueueContext(queue);
           vm.playTrack(track);
         },
-        onLongPress: () => _showTrackMenu(context, track),
+        onLongPress: () => showTrackContextMenu(context, track),
       ),
     );
   }
@@ -849,71 +849,6 @@ class _DiscoverScreenState extends State<DiscoverScreen>
     // Reload current tab to apply filters
     final tabs = [NgTab.featured, NgTab.latest, NgTab.popular];
     vm.reloadTab(tabs[_tabController.index]);
-  }
-
-  void _showTrackMenu(BuildContext context, Track track) {
-    final lvm = context.read<LibraryViewModel>();
-
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Add to playlist'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showAddToPlaylist(context, track);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.favorite_border),
-              title: const Text('Add to Likes'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await lvm.addStagedLike(track);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Added to Likes')),
-                  );
-                }
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.block),
-              title: const Text('Blacklist'),
-              onTap: () async {
-                Navigator.pop(ctx);
-                await lvm.addToBlacklist(track);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Track blacklisted')),
-                  );
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showAddToPlaylist(BuildContext context, Track track) async {
-    final lvm = context.read<LibraryViewModel>();
-    final playlist = await showAddToPlaylistSheet(
-      context,
-      tracks: [track],
-      lvm: lvm,
-    );
-    if (playlist == null || !context.mounted) return;
-    await lvm.addTrackToPlaylist(playlist, track);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Added to "${playlist.name}"')),
-      );
-    }
   }
 
   Future<void> _bypassCaptcha(BuildContext context) async {

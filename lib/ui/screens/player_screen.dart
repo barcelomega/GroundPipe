@@ -28,8 +28,8 @@ class PlayerScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
     final track = vm.currentTrack;
-    final landscape = MediaQuery.of(context).size.width >
-        MediaQuery.of(context).size.height;
+    final landscape =
+        MediaQuery.of(context).size.width > MediaQuery.of(context).size.height;
 
     final playerBlock = _PlayerPod(vm: vm, track: track);
     final creditsBlock = track == null
@@ -44,8 +44,8 @@ class PlayerScreen extends StatelessWidget {
     final Widget top;
     if (landscape && track != null) {
       final m = MediaQuery.of(context);
-      final topH =
-          (m.size.height - m.padding.top - 56 - 8 - 6).clamp(180.0, m.size.height);
+      final topH = (m.size.height - m.padding.top - 56 - 8 - 6)
+          .clamp(180.0, m.size.height);
       final chrome = themeCtl.textured ? 73 : 45;
       top = SizedBox(
         height: topH,
@@ -86,7 +86,10 @@ class PlayerScreen extends StatelessWidget {
     } else {
       top = Column(children: [
         playerBlock,
-        if (track != null) ...[const SizedBox(height: 10), _AuthorPod(track: track)],
+        if (track != null) ...[
+          const SizedBox(height: 10),
+          _AuthorPod(track: track)
+        ],
         if (track != null) creditsBlock,
       ]);
     }
@@ -132,7 +135,6 @@ class PlayerScreen extends StatelessWidget {
     );
   }
 }
-
 
 Future<void> _requireLogin(
   BuildContext context,
@@ -196,7 +198,6 @@ void _showNgSnack(BuildContext context, String text, {bool ok = true}) {
   ));
 }
 
-
 class _TopBar extends StatefulWidget {
   final Track? track;
   const _TopBar({this.track});
@@ -247,7 +248,9 @@ class _TopBarState extends State<_TopBar> {
                   NgIconButton(
                     icon: lvm.isStagedLike(track.id) ? 'fav-on' : 'fav-add',
                     padding: 9,
-                    tooltip: lvm.isStagedLike(track.id) ? 'Remove from Likes' : 'Add to Likes',
+                    tooltip: lvm.isStagedLike(track.id)
+                        ? 'Remove from Likes'
+                        : 'Add to Likes',
                     onTap: () async {
                       if (lvm.isStagedLike(track.id)) {
                         await lvm.removeStagedLike(track.id);
@@ -274,9 +277,6 @@ class _TopBarState extends State<_TopBar> {
                     onTap: () => showTrackContextMenu(
                       context,
                       track,
-                      showAddToPlaylist: true,
-                      showLike: true,
-                      showDislike: true,
                     ),
                   ),
                   const SizedBox(width: 4),
@@ -288,7 +288,6 @@ class _TopBarState extends State<_TopBar> {
     );
   }
 }
-
 
 class _PlayerPod extends StatefulWidget {
   final NgViewModel vm;
@@ -327,11 +326,11 @@ class _PlayerPodState extends State<_PlayerPod> {
                       if (mounted) setState(() => _downloading = false);
                     },
             ),
-      child: _PlayerStage(vm: widget.vm, track: track, artHeight: widget.artHeight),
+      child: _PlayerStage(
+          vm: widget.vm, track: track, artHeight: widget.artHeight),
     );
   }
 }
-
 
 class _PlayerStage extends StatelessWidget {
   final NgViewModel vm;
@@ -364,7 +363,6 @@ class _PlayerStage extends StatelessWidget {
     );
   }
 }
-
 
 class _DetailsSection extends StatelessWidget {
   final Track track;
@@ -510,7 +508,6 @@ class _ShareButton extends StatelessWidget {
   }
 }
 
-
 class _TrophyPod extends StatelessWidget {
   final Track track;
   const _TrophyPod({required this.track});
@@ -580,7 +577,6 @@ class _TrophyRow extends StatelessWidget {
     );
   }
 }
-
 
 class AuthorCommentsTestable extends StatelessWidget {
   final String html;
@@ -656,10 +652,9 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
   @override
   Widget build(BuildContext context) {
     Widget content = _blocks != null
-        ? Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: _blocks!)
-        : Text(widget.fallbackText ?? '',
-            style: ngBody.copyWith(height: 1.45));
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: _blocks!)
+        : Text(widget.fallbackText ?? '', style: ngBody.copyWith(height: 1.45));
 
     return NgPod(
       icon: widget.icon,
@@ -733,8 +728,8 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
             if (t.isNotEmpty) {
               out.add(Padding(
                 padding: const EdgeInsets.only(bottom: _gap),
-                child: Text(t,
-                    style: ngBody.copyWith(height: 1.35, fontSize: 12)),
+                child:
+                    Text(t, style: ngBody.copyWith(height: 1.35, fontSize: 12)),
               ));
               lastBlank = false;
             }
@@ -849,8 +844,7 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
       if (smart != null) {
         final parts = smart.split(',');
         final w = double.tryParse(parts[0].trim());
-        final h =
-            parts.length > 1 ? double.tryParse(parts[1].trim()) : null;
+        final h = parts.length > 1 ? double.tryParse(parts[1].trim()) : null;
         if (w != null && h != null && w > 0 && h > 0) natural = Size(w, h);
       }
     }
@@ -874,8 +868,8 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
         switch (n.localName) {
           case 'br':
             if (spans.isNotEmpty &&
-                spans.any((s) =>
-                    s is TextSpan && (s.text ?? '').trim().isNotEmpty)) {
+                spans.any(
+                    (s) => s is TextSpan && (s.text ?? '').trim().isNotEmpty)) {
               spans.add(const TextSpan(text: '\n'));
             }
           case 'b' || 'strong':
@@ -888,8 +882,8 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
             if (inner != null) spans.add(inner);
           case 'u':
             final inner = _acInline(n.nodes,
-                style:
-                    st((s) => s.copyWith(decoration: TextDecoration.underline)));
+                style: st(
+                    (s) => s.copyWith(decoration: TextDecoration.underline)));
             if (inner != null) spans.add(inner);
           case 'a':
             final href = n.attributes['href'] ?? '';
@@ -905,8 +899,7 @@ class _AuthorCommentsPodState extends State<_AuthorCommentsPod> {
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => _openLink(idx),
-                  child: Text.rich(inner,
-                      style: ngBody.copyWith(height: 1.45)),
+                  child: Text.rich(inner, style: ngBody.copyWith(height: 1.45)),
                 ),
               ));
             } else {
@@ -972,15 +965,14 @@ class _AcImage extends StatelessWidget {
       img = SizedBox(width: w, height: h, child: img);
     } else {
       img = ConstrainedBox(
-        constraints: const BoxConstraints(
-            maxWidth: _acWidth, maxHeight: _acMaxImgH),
+        constraints:
+            const BoxConstraints(maxWidth: _acWidth, maxHeight: _acMaxImgH),
         child: img,
       );
     }
     return Align(alignment: Alignment.centerLeft, child: img);
   }
 }
-
 
 class _CreditsPod extends StatelessWidget {
   final Track track;
@@ -993,7 +985,8 @@ class _CreditsPod extends StatelessWidget {
 
     void openProfile() => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
+          MaterialPageRoute(
+              builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
         );
 
     return NgPod.list(
@@ -1041,7 +1034,6 @@ class _CreditsPod extends StatelessWidget {
     );
   }
 }
-
 
 class _AuthorPod extends StatefulWidget {
   final Track track;
@@ -1116,7 +1108,8 @@ class _AuthorPodState extends State<_AuthorPod> {
 
     void openProfile() => Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
+          MaterialPageRoute(
+              builder: (_) => ArtistScreen(authorUrl: t.artistAudioUrl)),
         );
 
     return NgPod(
@@ -1212,8 +1205,7 @@ class _TrackIdRow extends StatelessWidget {
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: () {
-                    Clipboard.setData(
-                        ClipboardData(text: trackId));
+                    Clipboard.setData(ClipboardData(text: trackId));
                     _showNgSnack(context, 'Track ID copied');
                   },
                   child: Padding(
@@ -1260,7 +1252,6 @@ class _CreditRow extends StatelessWidget {
     );
   }
 }
-
 
 class _ReviewsPod extends StatefulWidget {
   final Track track;
@@ -1381,12 +1372,10 @@ class _ReviewsPodState extends State<_ReviewsPod> {
               ),
             const SizedBox(height: 12),
           ],
-
           if (_loading)
             Padding(
               padding: EdgeInsets.symmetric(vertical: 12),
-              child: Center(
-                  child: Text('Loading…', style: ngLabel)),
+              child: Center(child: Text('Loading…', style: ngLabel)),
             )
           else if (_error != null)
             Column(children: [
@@ -1496,8 +1485,7 @@ class _VoteBarState extends State<_VoteBar> {
 
   int? _preview;
 
-  static String _stars(int v) =>
-      (v / 2).toStringAsFixed(v.isOdd ? 1 : 0);
+  static String _stars(int v) => (v / 2).toStringAsFixed(v.isOdd ? 1 : 0);
 
   @override
   void initState() {
@@ -1567,9 +1555,10 @@ class _VoteBarState extends State<_VoteBar> {
             style: TextStyle(
               fontFamily: ngHeaderFont,
               fontSize: 16,
-              color: (_note != null || (_voted != null && _voted! > 0)) && !_busy
-                  ? ngGold
-                  : ngWhite,
+              color:
+                  (_note != null || (_voted != null && _voted! > 0)) && !_busy
+                      ? ngGold
+                      : ngWhite,
               shadows: [Shadow(color: ngBlack, offset: Offset(0, 1))],
             ),
           ),
@@ -1601,7 +1590,6 @@ class _VoteBarState extends State<_VoteBar> {
     );
   }
 }
-
 
 class _VoteFaceRow extends StatelessWidget {
   final int selected;
@@ -1698,9 +1686,11 @@ class _ReviewCard extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 6),
                   child: ClipOval(
                     child: Image.network(review.avatarUrl,
-                        width: 26, height: 26, fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const SizedBox(
-                            width: 26, height: 26)),
+                        width: 26,
+                        height: 26,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) =>
+                            const SizedBox(width: 26, height: 26)),
                   ),
                 ),
               Expanded(
@@ -1717,8 +1707,7 @@ class _ReviewCard extends StatelessWidget {
                     ),
                     if (review.date.isNotEmpty) ...[
                       const SizedBox(width: 8),
-                      Text(review.date,
-                          style: ngLabel.copyWith(fontSize: 9)),
+                      Text(review.date, style: ngLabel.copyWith(fontSize: 9)),
                     ],
                   ],
                 ),
@@ -1795,8 +1784,8 @@ class _ReviewCard extends StatelessWidget {
                       decoration: const InputDecoration(
                         isDense: true,
                         border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(
-                            horizontal: 5, vertical: 4),
+                        contentPadding:
+                            EdgeInsets.symmetric(horizontal: 5, vertical: 4),
                       ),
                     ),
                   ),
@@ -1856,7 +1845,9 @@ class _AuthorResponse extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 5),
                   child: ClipOval(
                     child: Image.network(response.avatarUrl,
-                        width: 18, height: 18, fit: BoxFit.cover,
+                        width: 18,
+                        height: 18,
+                        fit: BoxFit.cover,
                         errorBuilder: (_, __, ___) =>
                             const SizedBox(width: 18, height: 18)),
                   ),
@@ -1865,9 +1856,8 @@ class _AuthorResponse extends StatelessWidget {
                 child: Text.rich(
                   TextSpan(children: [
                     TextSpan(
-                      text: response.author.isEmpty
-                          ? 'Author'
-                          : response.author,
+                      text:
+                          response.author.isEmpty ? 'Author' : response.author,
                       style: ngLink.copyWith(
                           fontWeight: FontWeight.bold, fontSize: 11),
                     ),
@@ -1912,8 +1902,7 @@ class _ReplyButton extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.chat_bubble_outline,
-                  size: 14, color: ngGold),
+              Icon(Icons.chat_bubble_outline, size: 14, color: ngGold),
               const SizedBox(width: 4),
               Text('Reply',
                   style: ngLink.copyWith(
@@ -1931,7 +1920,8 @@ class _ReviewPager extends StatelessWidget {
   final int pages;
   final ValueChanged<int> onGo;
 
-  const _ReviewPager({required this.page, required this.pages, required this.onGo});
+  const _ReviewPager(
+      {required this.page, required this.pages, required this.onGo});
 
   @override
   Widget build(BuildContext context) {
@@ -1941,7 +1931,8 @@ class _ReviewPager extends StatelessWidget {
       page - 1,
       page,
       page + 1,
-    }.where((n) => n >= 1 && n <= pages).toList()..sort();
+    }.where((n) => n >= 1 && n <= pages).toList()
+      ..sort();
 
     Widget numBtn(int n) {
       final active = n == page;
@@ -1981,15 +1972,18 @@ class _ReviewPager extends StatelessWidget {
       );
     }
 
-    Widget gap(int a, int b) =>
-        b - a > 1 ? Padding(
-              padding: EdgeInsets.symmetric(horizontal: 3),
-              child: Text('…', style: TextStyle(color: ngDim, fontSize: 13)),
-            ) : const SizedBox(width: 3);
+    Widget gap(int a, int b) => b - a > 1
+        ? Padding(
+            padding: EdgeInsets.symmetric(horizontal: 3),
+            child: Text('…', style: TextStyle(color: ngDim, fontSize: 13)),
+          )
+        : const SizedBox(width: 3);
 
     var seq = <Widget>[numBtn(nums.first)];
     for (var i = 1; i < nums.length; i++) {
-      seq..add(gap(nums[i - 1], nums[i]))..add(numBtn(nums[i]));
+      seq
+        ..add(gap(nums[i - 1], nums[i]))
+        ..add(numBtn(nums[i]));
     }
 
     return Padding(
@@ -2187,8 +2181,7 @@ class _MyReviewBlock extends StatelessWidget {
               onTap: onEdit,
               child: Padding(
                 padding: const EdgeInsets.all(4),
-                child: Image.asset(NgTex.a15('pencil'),
-                    width: 18, height: 18),
+                child: Image.asset(NgTex.a15('pencil'), width: 18, height: 18),
               ),
             ),
           ],
@@ -2209,7 +2202,8 @@ class _MyReviewBlock extends StatelessWidget {
                     child: Text(
                       'You',
                       style: ngLink.copyWith(
-                          fontWeight: FontWeight.bold, fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
                           color: ngGold),
                     ),
                   ),
@@ -2225,8 +2219,8 @@ class _MyReviewBlock extends StatelessWidget {
               if (review.date.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Text(review.date,
-                      style: ngLabel.copyWith(fontSize: 10)),
+                  child:
+                      Text(review.date, style: ngLabel.copyWith(fontSize: 10)),
                 ),
               if (review.body.isNotEmpty)
                 Padding(

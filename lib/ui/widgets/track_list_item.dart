@@ -12,6 +12,9 @@ class TrackListItem extends StatelessWidget {
   final bool isLiked;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final bool showLikedIndicator;
+  final bool showGenre;
+  final bool highlightCurrentTrack;
 
   const TrackListItem({
     super.key,
@@ -19,6 +22,9 @@ class TrackListItem extends StatelessWidget {
     this.isLiked = false,
     this.onTap,
     this.onLongPress,
+    this.showLikedIndicator = true,
+    this.showGenre = true,
+    this.highlightCurrentTrack = true,
   });
 
   @override
@@ -32,7 +38,7 @@ class TrackListItem extends StatelessWidget {
     final colorScheme = theme.colorScheme;
 
     return Material(
-      color: isCurrent
+      color: isCurrent && highlightCurrentTrack
           ? Color.alphaBlend(
               colorScheme.onSurface.withOpacity(0.08),
               colorScheme.surface,
@@ -56,8 +62,8 @@ class TrackListItem extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Flexible(child: TrackGenre(track: track)),
-              if (isLiked) ...[
+              if (showGenre) Flexible(child: TrackGenre(track: track)),
+              if (showLikedIndicator && isLiked) ...[
                 const SizedBox(width: 8),
                 Icon(
                   Icons.favorite,

@@ -239,9 +239,8 @@ class _RecommendedScreenState extends State<RecommendedScreen> {
                                 player.setQueueContext(tracks);
                                 player.playTrack(track);
                               },
-                              onLongPress: () => showTrackContextMenu(
-                                  context, track,
-                                  showLike: false),
+                              onLongPress: () =>
+                                  showTrackContextMenu(context, track),
                             ),
                           );
                         },

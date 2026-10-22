@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/services.dart';
 import 'dart:io';
 
 import '../../viewmodel/ng_viewmodel.dart';
@@ -15,7 +14,7 @@ import '../../data/repository/cache_manager.dart';
 import 'artist_screen.dart';
 import '../widgets/cache_pin_button.dart';
 import '../widgets/track_artwork.dart';
-import '../widgets/add_to_playlist_sheet.dart';
+import '../widgets/track_context_menu.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
@@ -580,80 +579,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     if (track == null) return;
 
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Add to playlist'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showAddToPlaylist(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined),
-              title: const Text('Download'),
-              onTap: () {
-                Navigator.pop(ctx);
-                // TODO: implement download
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.share),
-              title: const Text('Share'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _shareTrack(context);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _shareTrack(BuildContext context) async {
-    final track = context.read<NgViewModel>().currentTrack;
-    if (track == null) return;
-
-    final url = 'https://www.newgrounds.com/audio/listen/${track.id}';
-    try {
-      await const MethodChannel('ngmusic/share').invokeMethod<void>(
-        'shareText',
-        {'text': url},
-      );
-    } on MissingPluginException {
-      await Clipboard.setData(ClipboardData(text: url));
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Track link copied to clipboard')),
-        );
-      }
-    }
-  }
-
-  Future<void> _showAddToPlaylist(BuildContext context) async {
-    final vm = context.read<NgViewModel>();
-    final lvm = context.read<LibraryViewModel>();
-    final track = vm.currentTrack;
-
-    if (track == null) return;
-
-    final playlist = await showAddToPlaylistSheet(
-      context,
-      tracks: [track],
-      lvm: lvm,
-    );
-    if (playlist == null || !context.mounted) return;
-    await lvm.addTrackToPlaylist(playlist, track);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Added to "${playlist.name}"')),
-      );
-    }
+    showTrackContextMenu(context, track);
   }
 }

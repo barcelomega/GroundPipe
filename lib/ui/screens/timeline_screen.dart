@@ -15,7 +15,6 @@ import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/ng_drawer.dart';
 import '../widgets/track_context_menu.dart';
 import '../widgets/track_list_item.dart';
-import 'artist_screen.dart';
 import 'authors_screen.dart';
 
 class TimelineProgress extends ChangeNotifier {
@@ -584,7 +583,9 @@ class _TimelineScreenState extends State<TimelineScreen> {
                                             player.setQueueContext(visible);
                                             player.playTrack(track);
                                           },
-                                          onLongPress: () => _showMenu(track),
+                                          onLongPress: () =>
+                                              showTrackContextMenu(
+                                                  context, track),
                                         ),
                                       ),
                                     ],
@@ -598,35 +599,5 @@ class _TimelineScreenState extends State<TimelineScreen> {
                     ),
             ),
     );
-  }
-
-  void _showMenu(Track track) {
-    showModalBottomSheet(
-        context: context,
-        showDragHandle: true,
-        builder: (sheet) => SafeArea(
-                child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                    leading: const Icon(Icons.person_outline),
-                    title: const Text('View author'),
-                    onTap: () {
-                      Navigator.pop(sheet);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (_) => ArtistScreen(
-                                  authorUrl: track.artistAudioUrl)));
-                    }),
-                ListTile(
-                    leading: const Icon(Icons.more_horiz),
-                    title: const Text('Track options'),
-                    onTap: () {
-                      Navigator.pop(sheet);
-                      showTrackContextMenu(context, track, showLike: false);
-                    }),
-              ],
-            )));
   }
 }

@@ -3,12 +3,11 @@ import '../../viewmodel/authors_viewmodel.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/model/playlist.dart';
-import '../../data/model/track.dart';
-import '../widgets/add_to_playlist_sheet.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/track_list_item.dart';
+import '../widgets/track_context_menu.dart';
 
 class PlaylistScreen extends StatefulWidget {
   final Playlist playlist;
@@ -46,7 +45,6 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
-    final lvm = context.watch<LibraryViewModel>();
     final authors = context.watch<AuthorsViewModel>();
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
@@ -174,36 +172,46 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                     return SizedBox.shrink(
                         key: ValueKey(playlistTrack.trackId));
                   }
-                  final isLiked = lvm.isStagedLike(track.id);
-
-                  return ReorderableDragStartListener(
+                  final isCurrent = vm.currentTrack?.id == track.id;
+                  return Material(
                     key: ValueKey(playlistTrack.trackId),
-                    index: index,
-                    child: Material(
-                      color: colorScheme.surface,
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TrackListItem(
-                              track: track,
-                              isLiked: isLiked,
-                              onTap: () {
-                                final trackList =
-                                    _tracks.map((t) => t.toTrack()).toList();
-                                vm.setQueueContext(trackList);
-                                vm.playTrack(track);
-                              },
-                              onLongPress: () =>
-                                  _showTrackMenu(context, track, playlistTrack),
+                    color: isCurrent
+                        ? Color.alphaBlend(
+                            colorScheme.onSurface.withOpacity(0.08),
+                            colorScheme.surface,
+                          )
+                        : colorScheme.surface,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TrackListItem(
+                            track: track,
+                            showLikedIndicator: false,
+                            showGenre: false,
+                            highlightCurrentTrack: false,
+                            onTap: () {
+                              final trackList =
+                                  _tracks.map((t) => t.toTrack()).toList();
+                              vm.setQueueContext(trackList);
+                              vm.playTrack(track);
+                            },
+                            onLongPress: () =>
+                                _showTrackMenu(context, track, playlistTrack),
+                          ),
+                        ),
+                        ReorderableDelayedDragStartListener(
+                          key: ValueKey('${playlistTrack.trackId}-drag-handle'),
+                          index: index,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 18),
+                            child: Icon(
+                              Icons.drag_handle,
+                              color: colorScheme.onSurfaceVariant,
                             ),
                           ),
-                          Icon(
-                            Icons.drag_handle,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(width: 12),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   );
                 },
@@ -223,60 +231,22 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   void _showTrackMenu(
       BuildContext context, track, PlaylistTrack playlistTrack) {
     final lvm = context.read<LibraryViewModel>();
-
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.send),
-              title: const Text('Send to Playlist'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showSendToPlaylist(context, track);
-              },
-            ),
-            ListTile(
-              leading:
-                  const Icon(Icons.remove_circle_outline, color: Colors.red),
-              title: const Text('Remove from playlist',
-                  style: TextStyle(color: Colors.red)),
-              onTap: () async {
-                Navigator.pop(ctx);
-                if (widget.playlist.id != null) {
-                  await lvm.removeTrackFromPlaylist(
-                      widget.playlist.id!, playlistTrack.trackId);
-                  _loadTracks();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Removed from playlist')),
-                    );
-                  }
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showSendToPlaylist(BuildContext context, Track track) async {
-    final lvm = context.read<LibraryViewModel>();
-    final playlist = await showAddToPlaylistSheet(
+    showTrackContextMenu(
       context,
-      tracks: [track],
-      lvm: lvm,
+      track,
+      showRemove: true,
+      removeLabel: 'Remove from playlist',
+      onRemove: () async {
+        final id = widget.playlist.id;
+        if (id == null) return;
+        await lvm.removeTrackFromPlaylist(id, playlistTrack.trackId);
+        await _loadTracks();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Removed from playlist')),
+          );
+        }
+      },
     );
-    if (playlist == null || !context.mounted) return;
-    if (playlist.id == widget.playlist.id) return;
-    await lvm.addTrackToPlaylist(playlist, track);
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Sent to "${playlist.name}"')),
-      );
-    }
   }
 }

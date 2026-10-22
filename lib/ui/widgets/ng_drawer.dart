@@ -79,7 +79,7 @@ class NgDrawer extends StatelessWidget {
                 showAboutDialog(
                   context: context,
                   applicationName: 'GroundPipe',
-                  applicationVersion: '1.0.0',
+                  applicationVersion: '1.1.2+3',
                   applicationLegalese: 'MIT License',
                   children: const [
                     SizedBox(height: 16),

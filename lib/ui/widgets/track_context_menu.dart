@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../data/model/track.dart';
+import '../../services/track_downloader.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import 'add_to_playlist_sheet.dart';
 
@@ -9,51 +11,44 @@ import 'add_to_playlist_sheet.dart';
 Future<void> showTrackContextMenu(
   BuildContext context,
   Track track, {
-  bool showAddToPlaylist = true,
-  bool showLike = true,
-  bool showDislike = true,
   bool showRemove = false,
   bool showCache = true,
   VoidCallback? onRemove,
+  String removeLabel = 'Remove from playlist',
 }) async {
   await showModalBottomSheet(
     context: context,
     showDragHandle: true,
     builder: (ctx) => _TrackContextMenu(
       track: track,
-      showAddToPlaylist: showAddToPlaylist,
-      showLike: showLike,
-      showDislike: showDislike,
       showRemove: showRemove,
       showCache: showCache,
       onRemove: onRemove,
+      removeLabel: removeLabel,
     ),
   );
 }
 
 class _TrackContextMenu extends StatelessWidget {
   final Track track;
-  final bool showAddToPlaylist;
-  final bool showLike;
-  final bool showDislike;
   final bool showRemove;
   final bool showCache;
   final VoidCallback? onRemove;
+  final String removeLabel;
 
   const _TrackContextMenu({
     required this.track,
-    required this.showAddToPlaylist,
-    required this.showLike,
-    required this.showDislike,
     required this.showRemove,
     required this.showCache,
     this.onRemove,
+    required this.removeLabel,
   });
 
   @override
   Widget build(BuildContext context) {
     final lvm = context.watch<LibraryViewModel>();
     final colorScheme = Theme.of(context).colorScheme;
+    final navigator = Navigator.of(context);
 
     return SafeArea(
       child: Padding(
@@ -71,11 +66,12 @@ class _TrackContextMenu extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                     child: track.iconUrl.isNotEmpty
                         ? Image.network(
-                            track.iconUrl,
+                            track.previewIconUrl,
                             width: 56,
                             height: 56,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _DefaultIcon(colorScheme),
+                            errorBuilder: (_, __, ___) =>
+                                _DefaultIcon(colorScheme),
                           )
                         : _DefaultIcon(colorScheme),
                   ),
@@ -95,9 +91,10 @@ class _TrackContextMenu extends StatelessWidget {
                         const SizedBox(height: 4),
                         Text(
                           track.artist,
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -111,75 +108,78 @@ class _TrackContextMenu extends StatelessWidget {
             const Divider(height: 1),
 
             // Actions
-            if (showAddToPlaylist)
-              ListTile(
-                leading: const Icon(Icons.playlist_add),
-                title: const Text('Add to Playlist'),
-                onTap: () async {
-                  Navigator.pop(context);
-                  final playlist = await showAddToPlaylistSheet(
-                    context,
-                    tracks: [track],
-                    lvm: lvm,
-                  );
-                  if (playlist != null && context.mounted) {
-                    await lvm.addTrackToPlaylist(playlist, track);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Added to \"${playlist.name}\"')),
-                      );
-                    }
-                  }
-                },
-              ),
-
-            if (showLike)
-              ListTile(
-                leading: Icon(
-                  lvm.isStagedLike(track.id) ? Icons.favorite : Icons.favorite_border,
-                  color: lvm.isStagedLike(track.id) ? Colors.red : null,
-                ),
-                title: Text(lvm.isStagedLike(track.id) ? 'Remove from Liked' : 'Like'),
-                onTap: () async {
-                  Navigator.pop(context);
-                  if (lvm.isStagedLike(track.id)) {
-                    await lvm.removeStagedLike(track.id);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Removed from liked tracks')),
-                      );
-                    }
-                  } else {
-                    await lvm.addStagedLike(track);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Added to liked tracks')),
-                      );
-                    }
-                  }
-                },
-              ),
-
-            if (showDislike)
-              ListTile(
-                leading: const Icon(Icons.block, color: Colors.red),
-                title: const Text('Never show again'),
-                onTap: () async {
-                  Navigator.pop(context);
-                  await lvm.addToBlacklist(track);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: const Text('Added to blacklist'),
-                        action: SnackBarAction(
-                          label: 'Undo',
-                          onPressed: () => lvm.removeFromBlacklist(track.id),
-                        ),
-                      ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Add to playlist'),
+              onTap: () async {
+                final navigator = Navigator.of(context);
+                Navigator.pop(context);
+                final playlist = await showAddToPlaylistSheet(
+                  navigator.context,
+                  tracks: [track],
+                  lvm: lvm,
+                );
+                if (playlist != null && navigator.mounted) {
+                  await lvm.addTrackToPlaylist(playlist, track);
+                  if (navigator.mounted) {
+                    ScaffoldMessenger.of(navigator.context).showSnackBar(
+                      SnackBar(content: Text('Added to "${playlist.name}"')),
                     );
                   }
-                },
+                }
+              },
+            ),
+
+            ListTile(
+              leading: Icon(
+                lvm.isStagedLike(track.id)
+                    ? Icons.favorite
+                    : Icons.favorite_border,
+                color: lvm.isStagedLike(track.id) ? Colors.red : null,
               ),
+              title: Text(lvm.isStagedLike(track.id)
+                  ? 'Remove from Likes'
+                  : 'Add to Likes'),
+              onTap: () async {
+                Navigator.pop(context);
+                if (lvm.isStagedLike(track.id)) {
+                  await lvm.removeStagedLike(track.id);
+                  if (navigator.mounted) {
+                    ScaffoldMessenger.of(navigator.context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Removed from liked tracks')),
+                    );
+                  }
+                } else {
+                  await lvm.addStagedLike(track);
+                  if (navigator.mounted) {
+                    ScaffoldMessenger.of(navigator.context).showSnackBar(
+                      const SnackBar(content: Text('Added to liked tracks')),
+                    );
+                  }
+                }
+              },
+            ),
+
+            ListTile(
+              leading: const Icon(Icons.block, color: Colors.red),
+              title: const Text('Blacklist'),
+              onTap: () async {
+                Navigator.pop(context);
+                await lvm.addToBlacklist(track);
+                if (navigator.mounted) {
+                  ScaffoldMessenger.of(navigator.context).showSnackBar(
+                    SnackBar(
+                      content: const Text('Added to blacklist'),
+                      action: SnackBarAction(
+                        label: 'Undo',
+                        onPressed: () => lvm.removeFromBlacklist(track.id),
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
 
             if (showCache)
               FutureBuilder<bool>(
@@ -190,13 +190,14 @@ class _TrackContextMenu extends StatelessWidget {
                     leading: Icon(
                       isCached ? Icons.download_done : Icons.download,
                     ),
-                    title: Text(isCached ? 'Remove from cache' : 'Cache offline'),
+                    title:
+                        Text(isCached ? 'Remove from cache' : 'Cache offline'),
                     onTap: () async {
                       Navigator.pop(context);
                       if (isCached) {
                         await lvm.removeCachedTrack(track.id);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
+                        if (navigator.mounted) {
+                          ScaffoldMessenger.of(navigator.context).showSnackBar(
                             const SnackBar(
                               content: Text('Removed from cache'),
                             ),
@@ -204,9 +205,9 @@ class _TrackContextMenu extends StatelessWidget {
                         }
                       } else {
                         // Show progress dialog
-                        if (context.mounted) {
+                        if (navigator.mounted) {
                           showDialog(
-                            context: context,
+                            context: navigator.context,
                             barrierDismissible: false,
                             builder: (ctx) => _CacheProgressDialog(
                               track: track,
@@ -220,10 +221,40 @@ class _TrackContextMenu extends StatelessWidget {
                 },
               ),
 
-              if (showRemove && onRemove != null)
+            ListTile(
+              leading: const Icon(Icons.file_download_outlined),
+              title: const Text('Download'),
+              onTap: () {
+                Navigator.pop(context);
+                TrackDownloader.download(track, navigator.context);
+              },
+            ),
+
+            ListTile(
+              leading: const Icon(Icons.share_outlined),
+              title: const Text('Share'),
+              onTap: () async {
+                Navigator.pop(context);
+                final url =
+                    'https://www.newgrounds.com/audio/listen/${track.id}';
+                try {
+                  await const MethodChannel('ngmusic/share')
+                      .invokeMethod<void>('shareText', {'text': url});
+                } on MissingPluginException {
+                  await Clipboard.setData(ClipboardData(text: url));
+                  if (navigator.mounted) {
+                    ScaffoldMessenger.of(navigator.context).showSnackBar(
+                      const SnackBar(content: Text('Track link copied')),
+                    );
+                  }
+                }
+              },
+            ),
+
+            if (showRemove && onRemove != null)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
-                title: const Text('Remove'),
+                title: Text(removeLabel),
                 onTap: () {
                   Navigator.pop(context);
                   onRemove?.call();
