@@ -27,6 +27,9 @@ void main() {
   unawaited(CacheManager.instance.initializeArtworkCaches());
   AppLifecycleListener(
     onExitRequested: () async {
+      // Promote cached previews of durable tracks before the temporary store
+      // is wiped.
+      await CacheManager.instance.syncPermanentArtwork();
       await CacheManager.instance.clearTemporaryArtwork();
       return AppExitResponse.exit;
     },

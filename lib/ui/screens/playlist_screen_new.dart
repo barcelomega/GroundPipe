@@ -189,6 +189,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
                             showLikedIndicator: false,
                             showGenre: false,
                             highlightCurrentTrack: false,
+                            persistentArtwork: true,
                             onTap: () {
                               final trackList =
                                   _tracks.map((t) => t.toTrack()).toList();

@@ -234,6 +234,7 @@ class _RecommendedScreenState extends State<RecommendedScreen> {
                             child: TrackListItem(
                               track: track,
                               isLiked: isLiked,
+                              persistentArtwork: true,
                               onTap: () {
                                 final player = context.read<NgViewModel>();
                                 player.setQueueContext(tracks);

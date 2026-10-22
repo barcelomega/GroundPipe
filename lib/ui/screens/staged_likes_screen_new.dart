@@ -80,6 +80,7 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
                 return TrackListItem(
                   track: track,
                   isLiked: true,
+                  persistentArtwork: true,
                   onTap: () {
                     final trackList = likes.map((l) => l.toTrack()).toList();
                     vm.setQueueContext(trackList);

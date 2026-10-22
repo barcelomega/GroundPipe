@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as path;
@@ -23,33 +24,89 @@ class CacheManager {
   Set<String> _persistentArtworkIds = const {};
   Future<void>? _persistentSync;
   bool _persistentSyncQueued = false;
+  Timer? _syncDebounce;
+  String? _permanentArtworkPath;
+  String? _temporaryArtworkPath;
+  String? _legacyCachePath;
+
+  /// Returns an already cached full cover without touching platform channels.
+  String? knownArtworkPath(String trackId) {
+    final directory = _legacyCachePath;
+    if (directory == null) return null;
+    for (final ext in ['webp', 'jpg', 'png']) {
+      final file = File(path.join(directory, '${trackId}_art.$ext'));
+      if (file.existsSync()) return file.path;
+    }
+    return null;
+  }
 
   /// Whether [trackId] belongs to a durable source (Likes, playlists,
   /// Timeline or recommendations), so its icon must survive restarts.
   bool isPersistentArtworkTrack(String trackId) =>
       _persistentArtworkIds.contains(trackId);
 
+  /// Seeds the cached directory paths in tests that cannot use platform
+  /// channels.
+  @visibleForTesting
+  void debugSetArtworkDirectories({
+    String? permanent,
+    String? temporary,
+    String? legacy,
+  }) {
+    _permanentArtworkPath = permanent;
+    _temporaryArtworkPath = temporary;
+    _legacyCachePath = legacy;
+  }
+
+  /// Returns an already cached icon without touching the network or platform
+  /// channels, so lists can render it on their first frame.
+  String? knownIconPath(String trackId) {
+    for (final directory in [
+      _permanentArtworkPath,
+      _temporaryArtworkPath,
+      _legacyCachePath,
+    ]) {
+      if (directory == null) continue;
+      for (final suffix in ['icon', 'recommendation_icon']) {
+        for (final ext in ['webp', 'jpg', 'png']) {
+          final file = File(path.join(directory, '${trackId}_$suffix.$ext'));
+          if (file.existsSync()) return file.path;
+        }
+      }
+    }
+    return null;
+  }
+
   /// Get cache directory
   Future<Directory> getCacheDir() async {
+    final cached = _legacyCachePath;
+    if (cached != null) return Directory(cached);
     final appDir = await getApplicationDocumentsDirectory();
     final cacheDir = Directory(path.join(appDir.path, 'track_cache'));
     if (!await cacheDir.exists()) {
       await cacheDir.create(recursive: true);
     }
+    _legacyCachePath = cacheDir.path;
     return cacheDir;
   }
 
   Future<Directory> getPermanentArtworkDir() async {
+    final cached = _permanentArtworkPath;
+    if (cached != null) return Directory(cached);
     final appDir = await getApplicationSupportDirectory();
     final dir = Directory(path.join(appDir.path, 'permanent_artwork'));
     if (!await dir.exists()) await dir.create(recursive: true);
+    _permanentArtworkPath = dir.path;
     return dir;
   }
 
   Future<Directory> getTemporaryArtworkDir() async {
+    final cached = _temporaryArtworkPath;
+    if (cached != null) return Directory(cached);
     final tempDir = await getTemporaryDirectory();
     final dir = Directory(path.join(tempDir.path, 'groundpipe_artwork'));
     if (!await dir.exists()) await dir.create(recursive: true);
+    _temporaryArtworkPath = dir.path;
     return dir;
   }
 
@@ -61,6 +118,7 @@ class CacheManager {
         await temporaryDir.delete(recursive: true);
       }
     } catch (_) {}
+    _temporaryArtworkPath = null;
   }
 
   /// Starts a fresh temporary artwork store and re-synchronises the permanent
@@ -76,14 +134,17 @@ class CacheManager {
   Future<void> syncPermanentArtwork() =>
       _persistentSync ??= _runPermanentArtworkSync();
 
-  /// Fire-and-forget variant used after likes, playlists, Timeline or
-  /// recommendation sets change.
+  /// Fire-and-forget variant used after likes, playlists, Timeline,
+  /// recommendation sets or cached previews change.
   void schedulePermanentArtworkSync() {
-    if (_persistentSync != null) {
-      _persistentSyncQueued = true;
-      return;
-    }
-    unawaited(syncPermanentArtwork());
+    _syncDebounce ??= Timer(const Duration(seconds: 1), () {
+      _syncDebounce = null;
+      if (_persistentSync != null) {
+        _persistentSyncQueued = true;
+        return;
+      }
+      unawaited(syncPermanentArtwork());
+    });
   }
 
   Future<void> _runPermanentArtworkSync() async {
@@ -287,7 +348,15 @@ class CacheManager {
   /// Store transient artwork under a bounded, per-launch cache directory.
   Future<String?> cacheTemporaryTrackIcon(Track track) async {
     final cacheDir = await getTemporaryArtworkDir();
-    return _cacheIcon(track, cacheDir, suffix: 'icon', temporary: true);
+    final icon =
+        await _cacheIcon(track, cacheDir, suffix: 'icon', temporary: true);
+    if (icon != null && path.isWithin(cacheDir.path, icon)) {
+      // The track may belong to Likes, a playlist, Timeline or a saved
+      // recommendation set; promote the preview before the next launch wipes
+      // the temporary store.
+      schedulePermanentArtworkSync();
+    }
+    return icon;
   }
 
   /// Persist the exact recommendation artwork, caching the reduced preview.

@@ -17,12 +17,17 @@ class TrackArtwork extends StatefulWidget {
   /// Uses the reduced cached icon when [compact] is true.
   final bool compact;
 
+  /// Forces the icon into the permanent store, for lists whose tracks belong
+  /// to Likes, playlists, Timeline or recommendations.
+  final bool persistent;
+
   const TrackArtwork({
     super.key,
     required this.track,
     required this.size,
     this.radius = 4,
     this.compact = false,
+    this.persistent = false,
   });
 
   @override
@@ -36,6 +41,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
   String? _coverPath;
   int? _revision;
   bool _cachingIcon = false;
+  String? _initialPath;
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +55,10 @@ class _TrackArtworkState extends State<TrackArtwork> {
       _iconUrl = widget.track.iconUrl;
       _coverPath = widget.track.localCoverPath;
       _cachingIcon = false;
-      _localArtwork = _resolveLocalArtwork();
+      final known = _knownLocalPath();
+      _initialPath = known;
+      _localArtwork =
+          known != null ? Future.value(known) : _resolveLocalArtwork();
     }
     final colors = Theme.of(context).colorScheme;
     final fallback = Icon(
@@ -63,6 +72,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
         dimension: widget.size,
         child: FutureBuilder<String?>(
           future: _localArtwork,
+          initialData: _initialPath,
           builder: (context, snapshot) {
             final path = snapshot.data;
             if (path != null) {
@@ -72,8 +82,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
                 errorBuilder: (_, __, ___) => fallback,
               );
             }
-            if (snapshot.connectionState == ConnectionState.waiting &&
-                !widget.track.hasLocalIcon) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
               return ColoredBox(
                 color: colors.surfaceContainerHighest,
                 child: fallback,
@@ -100,9 +109,35 @@ class _TrackArtworkState extends State<TrackArtwork> {
     );
   }
 
+  /// Synchronous local lookup used before the first frame, so reopening a
+  /// screen does not flash a placeholder while the same path is resolved
+  /// asynchronously.
+  String? _knownLocalPath() {
+    final track = widget.track;
+    if (widget.compact) {
+      final icon = CacheManager.instance.knownIconPath(track.id);
+      if (icon != null) return icon;
+      if (track.hasLocalIcon && File(track.localIconPath).existsSync()) {
+        return track.localIconPath;
+      }
+      final cover = track.localCoverPath;
+      if (cover != null && cover.isNotEmpty && File(cover).existsSync()) {
+        return cover;
+      }
+      return CacheManager.instance.knownArtworkPath(track.id);
+    }
+    final cover = track.localCoverPath;
+    if (cover != null && cover.isNotEmpty && File(cover).existsSync()) {
+      return cover;
+    }
+    return CacheManager.instance.knownArtworkPath(track.id);
+  }
+
   Future<String?> _resolveLocalArtwork() async {
     final track = widget.track;
     if (widget.compact) {
+      final known = _knownLocalPath();
+      if (known != null) return known;
       final icon = await CacheManager.instance.getCachedIconPath(track.id);
       if (icon != null) return icon;
       if (track.hasLocalIcon && await File(track.localIconPath).exists()) {
@@ -126,11 +161,16 @@ class _TrackArtworkState extends State<TrackArtwork> {
     _cachingIcon = true;
     try {
       final cache = CacheManager.instance;
-      final path = cache.isPersistentArtworkTrack(widget.track.id)
+      final usePermanent =
+          widget.persistent || cache.isPersistentArtworkTrack(widget.track.id);
+      final path = usePermanent
           ? await cache.cachePermanentTrackIcon(widget.track)
           : await cache.cacheTemporaryTrackIcon(widget.track);
       if (mounted && path != null) {
-        setState(() => _localArtwork = Future.value(path));
+        setState(() {
+          _initialPath = path;
+          _localArtwork = Future.value(path);
+        });
       }
     } catch (_) {
       // Artwork remains usable from the network image cache if disk caching fails.

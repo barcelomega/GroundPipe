@@ -16,6 +16,10 @@ class TrackListItem extends StatelessWidget {
   final bool showGenre;
   final bool highlightCurrentTrack;
 
+  /// Use the permanent artwork store for durable lists such as Likes,
+  /// playlists and Timeline.
+  final bool persistentArtwork;
+
   const TrackListItem({
     super.key,
     required this.track,
@@ -25,6 +29,7 @@ class TrackListItem extends StatelessWidget {
     this.showLikedIndicator = true,
     this.showGenre = true,
     this.highlightCurrentTrack = true,
+    this.persistentArtwork = false,
   });
 
   @override
@@ -45,7 +50,12 @@ class TrackListItem extends StatelessWidget {
             )
           : Colors.transparent,
       child: ListTile(
-        leading: TrackArtwork(track: track, size: 48, compact: true),
+        leading: TrackArtwork(
+          track: track,
+          size: 48,
+          compact: true,
+          persistent: persistentArtwork,
+        ),
         title: Text(
           track.title,
           maxLines: 1,

@@ -160,6 +160,7 @@ class _CachedTracksScreenState extends State<CachedTracksScreen> {
         return TrackListItem(
           track: track,
           isLiked: lvm.isStagedLike(track.id),
+          persistentArtwork: true,
           onTap: () {
             vm.setQueueContext(cachedTracks);
             vm.playTrack(track);

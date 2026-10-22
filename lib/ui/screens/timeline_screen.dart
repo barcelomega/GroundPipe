@@ -582,6 +582,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                                           track: track,
                                           isLiked:
                                               library.isStagedLike(track.id),
+                                          persistentArtwork: true,
                                           onTap: () {
                                             final player =
                                                 context.read<NgViewModel>();
