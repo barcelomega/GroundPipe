@@ -22,6 +22,7 @@ class TimelineFeed {
   final PublicationDateLoader loadDate;
   final List<_AuthorFeed> _sources;
   final _seen = <String>{};
+  final List<Track> _emitted = [];
   final void Function(int completed, int total)? onProgress;
   final void Function()? onMerging;
   void Function(String artist)? onAuthorChanged;
@@ -37,6 +38,13 @@ class TimelineFeed {
   }) : _sources = authors.map(_AuthorFeed.new).toList();
 
   int get totalAuthors => _sources.length;
+  List<Track> get emittedTracks => List.unmodifiable(_emitted);
+  int get loadedPages =>
+      _sources.fold(0, (total, source) => total + source.page - 1);
+  int get loadedTrackCount =>
+      _sources.fold(0, (total, source) => total + source.tracks.length);
+  bool get isComplete => _sources.every(
+      (source) => !source.hasMore && source.index >= source.tracks.length);
   int get completedAuthors => _loadedAuthors.length;
   bool get hasMore =>
       _sources.any((s) => s.index < s.tracks.length || s.hasMore);
@@ -86,6 +94,7 @@ class TimelineFeed {
     // Keep failed batches retryable without losing tracks already consumed.
     final positions = _sources.map((s) => s.index).toList();
     final seen = {..._seen};
+    final emitted = [..._emitted];
     try {
       final heads = <Track?>[];
       for (var start = 0; start < _sources.length; start += 4) {
@@ -105,7 +114,10 @@ class TimelineFeed {
         }
         if (newest == null) break;
         final track = heads[newest]!;
-        if (_seen.add(track.id)) output.add(track);
+        if (_seen.add(track.id)) {
+          output.add(track);
+          _emitted.add(track);
+        }
         _sources[newest].index++;
         // The next head is only needed if this batch still needs tracks.
         if (output.length == count) break;
@@ -119,7 +131,104 @@ class TimelineFeed {
       _seen
         ..clear()
         ..addAll(seen);
+      _emitted
+        ..clear()
+        ..addAll(emitted);
       rethrow;
     }
   }
+
+  Map<String, dynamic> toJson() => {
+        'currentAuthor': currentAuthor,
+        'authors': [
+          for (final source in _sources)
+            {
+              'username': source.author.username,
+              'page': source.page,
+              'index': source.index,
+              'hasMore': source.hasMore,
+              'tracks': source.tracks.map(_trackToJson).toList(),
+            }
+        ],
+        'seen': _seen.toList(),
+        'emitted': _emitted.map(_trackToJson).toList(),
+      };
+
+  factory TimelineFeed.fromJson({
+    required List<Author> authors,
+    required ArtistPageLoader loadPage,
+    required PublicationDateLoader loadDate,
+    required Map<String, dynamic> json,
+    void Function(int completed, int total)? onProgress,
+    void Function()? onMerging,
+  }) {
+    final feed = TimelineFeed(
+      authors: authors,
+      loadPage: loadPage,
+      loadDate: loadDate,
+      onProgress: onProgress,
+      onMerging: onMerging,
+    );
+    final data = (json['authors'] as List).cast<Map>();
+    for (final row in data) {
+      _AuthorFeed? source;
+      for (final candidate in feed._sources) {
+        if (candidate.author.username == row['username']) {
+          source = candidate;
+          break;
+        }
+      }
+      if (source == null) continue;
+      final tracks = (row['tracks'] as List)
+          .cast<Map>()
+          .map((track) => trackFromJson(Map<String, dynamic>.from(track)))
+          .toList();
+      source
+        ..tracks.addAll(tracks)
+        ..trackIds.addAll(tracks.map((track) => track.id))
+        ..page = row['page'] as int
+        ..index = row['index'] as int
+        ..hasMore = row['hasMore'] as bool;
+    }
+    feed.currentAuthor = json['currentAuthor'] as String?;
+    final activeTrackIds = feed._sources
+        .expand((source) => source.tracks)
+        .map((track) => track.id)
+        .toSet();
+    feed._seen.addAll(
+        (json['seen'] as List).cast<String>().where(activeTrackIds.contains));
+    feed._emitted.addAll((json['emitted'] as List)
+        .cast<Map>()
+        .map((track) => trackFromJson(Map<String, dynamic>.from(track)))
+        .where((track) => activeTrackIds.contains(track.id)));
+    for (final source in feed._sources) {
+      if (!source.hasMore && source.index >= source.tracks.length) {
+        feed._loadedAuthors.add(source.author.username);
+      }
+    }
+    return feed;
+  }
+
+  static Map<String, dynamic> _trackToJson(Track track) => {
+        'id': track.id,
+        'title': track.title,
+        'artist': track.artist,
+        'authorUrl': track.authorUrl,
+        'iconUrl': track.iconUrl,
+        'duration': track.duration,
+        'audioType': track.audioType,
+        'genre': track.genre,
+        'publishedAt': track.publishedAt?.toIso8601String(),
+      };
+
+  static Track trackFromJson(Map<String, dynamic> json) => Track(
+        id: json['id'] as String,
+        title: json['title'] as String,
+        artist: json['artist'] as String,
+        authorUrl: json['authorUrl'] as String?,
+        iconUrl: json['iconUrl'] as String,
+        duration: json['duration'] as int,
+        audioType: json['audioType'] as int,
+        genre: json['genre'] as String? ?? '',
+      )..publishedAt = DateTime.tryParse(json['publishedAt'] as String? ?? '');
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -8,6 +10,8 @@ import '../../viewmodel/ng_viewmodel.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../data/model/track.dart';
 import '../../data/repository/ng_repository.dart';
+import '../../data/repository/local_db.dart';
+import '../../data/repository/cache_manager.dart';
 import 'artist_screen.dart';
 import '../widgets/cache_pin_button.dart';
 import '../widgets/track_artwork.dart';
@@ -62,13 +66,35 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     setState(() {
       _recommendationsFor = trackId;
-      _recommendations = const [];
       _recommendationsLoading = true;
       _recommendationsUnavailable = false;
     });
+
+    final cached = await LocalDb.instance.getTrackRecommendations(trackId);
+    if (!mounted || request != _recommendationsRequest) return;
+    if (cached != null) {
+      try {
+        final tracks = (jsonDecode(cached) as List)
+            .map((item) => NgRepository.trackFromJson(
+                Map<String, dynamic>.from(item as Map)))
+            .toList();
+        unawaited(_cacheRecommendationIcons(tracks, request));
+        setState(() {
+          _recommendationsFor = trackId;
+          _recommendations = tracks;
+          _recommendationsLoading = false;
+          _recommendationsUnavailable = false;
+        });
+        return;
+      } catch (_) {
+        // Discard malformed old cache and fetch a fresh response.
+      }
+    }
+
     try {
       final tracks = await _repository.fetchRecommendedTracks(trackId);
       if (!mounted || request != _recommendationsRequest) return;
+      unawaited(_cacheRecommendationIcons(tracks, request));
       setState(() {
         _recommendations = tracks;
         _recommendationsLoading = false;
@@ -79,6 +105,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _recommendationsLoading = false;
         _recommendationsUnavailable = true;
       });
+    }
+  }
+
+  Future<void> _cacheRecommendationIcons(
+      List<Track> tracks, int request) async {
+    var updated = false;
+    for (final track in tracks) {
+      try {
+        final localPath = await CacheManager.instance.cacheTrackIcon(track);
+        if (localPath != null) {
+          track.iconUrl = localPath;
+          updated = true;
+        }
+      } catch (_) {
+        // Image caching must not block or fail the recommendation list.
+      }
+    }
+    if (updated && mounted && request == _recommendationsRequest) {
+      setState(() {});
     }
   }
 

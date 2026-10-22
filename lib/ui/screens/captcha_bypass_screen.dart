@@ -18,6 +18,7 @@ class _CaptchaBypassScreenState extends State<CaptchaBypassScreen> {
   bool _loading = true;
   bool _success = false;
   String? _error;
+  int _navigationGeneration = 0;
 
   @override
   void initState() {
@@ -29,15 +30,40 @@ class _CaptchaBypassScreenState extends State<CaptchaBypassScreen> {
           if (!_success) setState(() => _loading = true);
         },
         onPageFinished: (url) async {
+          if (!mounted) return;
           setState(() => _loading = false);
           debugPrint('[captcha-bypass] finished: $url');
 
-          // Check if we successfully loaded a Newgrounds page
-          if (url.contains('newgrounds.com') && !_success) {
-            // Give it a moment to ensure cookies are set
-            await Future.delayed(const Duration(milliseconds: 500));
-            _onSuccess();
+          if (!url.contains('newgrounds.com') || _success) return;
+          final generation = ++_navigationGeneration;
+          final pageText = await _ctrl.runJavaScriptReturningResult(
+            'document.body ? document.body.innerText : ""',
+          );
+          if (!mounted || generation != _navigationGeneration) return;
+          final text = pageText.toString().toLowerCase();
+          if (text.contains("you're making too many requests") ||
+              text.contains('too many requests') ||
+              text.contains('wait a bit before trying again')) {
+            setState(() {
+              _error = 'Newgrounds is temporarily rate-limiting requests. '
+                  'The verification page loaded, but access is not available yet. '
+                  'Wait a while, then try again.';
+            });
+            return;
           }
+          if (text.contains('access denied') ||
+              text.contains('captcha') &&
+                  !text.contains('verification complete') ||
+              text.contains('verify you are human') ||
+              text.contains('checking your browser')) {
+            setState(() {
+              _error =
+                  'Newgrounds verification is still required. Complete the '
+                  'challenge in the page, then reload to check access again.';
+            });
+            return;
+          }
+          _onSuccess();
         },
         onWebResourceError: (error) {
           debugPrint('[captcha-bypass] error: ${error.description}');
@@ -63,6 +89,7 @@ class _CaptchaBypassScreenState extends State<CaptchaBypassScreen> {
   }
 
   void _retry() {
+    _navigationGeneration++;
     setState(() {
       _error = null;
       _loading = true;
@@ -88,7 +115,8 @@ class _CaptchaBypassScreenState extends State<CaptchaBypassScreen> {
                 padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
                 child: NgPod.fill(
                   icon: 'flag',
-                  title: _success ? 'Verification Complete!' : 'Verifying Access',
+                  title:
+                      _success ? 'Verification Complete!' : 'Verifying Access',
                   skin: NgSkin.gold,
                   action: _success
                       ? NgPlateLink(
@@ -179,7 +207,6 @@ class _CaptchaBypassScreenState extends State<CaptchaBypassScreen> {
     );
   }
 }
-
 
 class _TopBar extends StatelessWidget {
   final VoidCallback onBack;

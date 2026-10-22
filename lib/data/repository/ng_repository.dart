@@ -25,6 +25,11 @@ class NgSiteDownException implements Exception {
   String toString() => 'Newgrounds is down (HTTP $statusCode)';
 }
 
+class NgRateLimitException implements Exception {
+  @override
+  String toString() => 'Newgrounds is temporarily rate-limiting requests';
+}
+
 class NgRepository {
   static final _authorAvatars = <String, Future<String?>>{};
 
@@ -112,8 +117,53 @@ class NgRepository {
   }
 
   Future<List<Track>> fetchRecommendedTracks(String trackId) async {
+    final cached = await LocalDb.instance.getTrackRecommendations(trackId);
+    if (cached != null) {
+      return (jsonDecode(cached) as List)
+          .map((item) => trackFromJson(Map<String, dynamic>.from(item)))
+          .toList();
+    }
     final html = await _connectRaw('$_baseUrl/audio/listen/$trackId');
-    return parseRecommendedTracks(html);
+    final tracks = parseRecommendedTracks(html);
+    await LocalDb.instance.saveTrackRecommendations(
+        trackId, jsonEncode(tracks.map(trackToJson).toList()));
+    return tracks;
+  }
+
+  static Map<String, dynamic> trackToJson(Track track) => {
+        'id': track.id,
+        'title': track.title,
+        'artist': track.artist,
+        'genre': track.genre,
+        'genreVerified': track.genreVerified,
+        'iconUrl': track.iconUrl,
+        'duration': track.duration,
+        'audioType': track.audioType,
+        'authorUrl': track.authorUrl,
+        'publishedAt': track.publishedAt?.toIso8601String(),
+      };
+
+  static Track trackFromJson(Map<String, dynamic> item) => Track(
+        id: item['id'] as String,
+        title: item['title'] as String,
+        artist: item['artist'] as String,
+        genre: item['genre'] as String? ?? '',
+        genreVerified: item['genreVerified'] as bool? ?? false,
+        iconUrl: item['iconUrl'] as String? ?? '',
+        duration: item['duration'] as int? ?? 0,
+        audioType: item['audioType'] as int? ?? 3,
+        authorUrl: item['authorUrl'] as String?,
+      )..publishedAt = DateTime.tryParse(item['publishedAt'] as String? ?? '');
+
+  Future<List<Track>> getCachedTrackRecommendations(String trackId) async {
+    final cached = await LocalDb.instance.getTrackRecommendations(trackId);
+    if (cached == null) return const [];
+    final decoded = jsonDecode(cached);
+    if (decoded is! List) return const [];
+    return decoded
+        .whereType<Map>()
+        .map((item) => trackFromJson(Map<String, dynamic>.from(item)))
+        .toList();
   }
 
   List<Track> parseRecommendedTracks(String html) {
@@ -155,6 +205,8 @@ class NgRepository {
         iconUrl: image?.attributes['src'] ?? '',
         duration: 0,
         audioType: 3,
+        authorUrl:
+            item.querySelector('.item-details-main a')?.attributes['href'],
       ));
     }
     return tracks;
@@ -253,24 +305,45 @@ class NgRepository {
     artist = Author.key(artist);
     final url =
         'https://${Uri.encodeComponent(artist.toLowerCase())}.newgrounds.com/audio?page=$page';
-    final response = await http.get(
-      Uri.parse(url),
-      headers: {
-        'User-Agent': _userAgent,
-        'Accept-Language': 'en-US,en;q=0.9',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-    ).timeout(const Duration(seconds: 20));
+    final response = await _fetch(url);
+    _throwIfRateLimited(response.body);
 
     if (response.statusCode != 200) {
       throw Exception('Could not load $artist (HTTP ${response.statusCode})');
     }
-    return parseArtistTracksPage(response.body, artist);
+    try {
+      return parseArtistTracksPage(response.body, artist);
+    } on FormatException catch (error) {
+      final preview = response.body.substring(
+          0, response.body.length < 180 ? response.body.length : 180);
+      debugPrint('[ng] invalid artist response $url: $preview');
+      try {
+        final fallback = await _connect('https://$artist.newgrounds.com/audio');
+        return (_parseArtistItems(fallback, artist), null);
+      } on NgRateLimitException {
+        rethrow;
+      } catch (_) {
+        throw FormatException('Invalid artist audio response: $error');
+      }
+    }
   }
 
   (List<Track>, String?) parseArtistTracksPage(String body, String artist) {
-    final data = jsonDecode(body) as Map<String, dynamic>;
-    if (data['errors'] != null || data['items'] is! Map) {
+    final dynamic data;
+    try {
+      data = jsonDecode(body);
+    } on FormatException {
+      final doc = htmlParser.parse(body);
+      if (doc.querySelector('html') == null) rethrow;
+      final tracks = _parseArtistItems(doc, artist);
+      final nextUrl = doc
+          .querySelector('#load-more[href*="page="], a[href*="page="]')
+          ?.attributes['href'];
+      final next =
+          nextUrl == null ? null : _absoluteArtistPage(artist, nextUrl);
+      return (tracks, next);
+    }
+    if (data is! Map || data['errors'] != null || data['items'] is! Map) {
       throw const FormatException('Invalid artist audio response');
     }
     final html = (data['items'] as Map)
@@ -278,13 +351,18 @@ class NgRepository {
         .expand((value) => value is List ? value : [value])
         .whereType<String>()
         .join('');
-    final tracks = _parseArtistItems(htmlParser.parse(html), artist);
+    final doc = htmlParser.parse(html);
+    final tracks = _parseArtistItems(doc, artist);
     final loadMore =
         (data['load_more'] as String? ?? '').replaceAll(r'\/', '/');
     final next =
         RegExp(r'https://[^"\s<>]+[?&]page=\d+').firstMatch(loadMore)?.group(0);
     return (tracks, next);
   }
+
+  String _absoluteArtistPage(String artist, String url) => Uri.parse(
+        'https://${artist.toLowerCase()}.newgrounds.com/audio',
+      ).resolve(url).toString();
 
   final _publicationDates = <String, DateTime>{};
   final _publicationDateLoads = <String, Future<DateTime>>{};
@@ -1371,12 +1449,7 @@ class NgRepository {
         (page == 1
             ? '$origin/favorites/audio'
             : '$origin/favorites/audio?page=$page');
-    final response = await http.get(Uri.parse(target), headers: {
-      'User-Agent': _userAgent,
-      'Accept-Language': 'en-US,en;q=0.9',
-      'X-Requested-With': 'XMLHttpRequest',
-      'Accept': 'application/json, text/javascript, */*; q=0.01',
-    }).timeout(const Duration(seconds: 20));
+    final response = await _fetch(target);
     if (response.statusCode != 200) {
       throw Exception('Could not load favorites for $username '
           '(HTTP ${response.statusCode})');
@@ -2169,6 +2242,7 @@ class NgRepository {
     }
 
     final result = response!;
+    _throwIfRateLimited(result.body);
     if (result.statusCode != 200) {
       final h = result.headers;
       debugPrint('[ng] $url -> ${result.statusCode} '
@@ -2183,6 +2257,7 @@ class NgRepository {
 
   Future<String> _connectRaw(String url) async {
     final response = await _fetch(url);
+    _throwIfRateLimited(response.body);
     if (response.statusCode != 200) {
       throw response.statusCode >= 500
           ? NgSiteDownException(response.statusCode, url)
@@ -2193,6 +2268,7 @@ class NgRepository {
 
   Future<Document> _connect(String url) async {
     final response = await _fetch(url);
+    _throwIfRateLimited(response.body);
     if (response.statusCode != 200) {
       throw response.statusCode >= 500
           ? NgSiteDownException(response.statusCode, url)
@@ -2203,6 +2279,7 @@ class NgRepository {
 
   Future<String> _connectRawAuth(String url, String cookie) async {
     final response = await _fetch(url, cookie: cookie);
+    _throwIfRateLimited(response.body);
     if (response.statusCode != 200) {
       throw response.statusCode >= 500
           ? NgSiteDownException(response.statusCode, url)
@@ -2210,4 +2287,15 @@ class NgRepository {
     }
     return response.body;
   }
+
+  void _throwIfRateLimited(String body) {
+    final text = htmlParser.parse(body).body?.text.toLowerCase() ?? '';
+    if (text.contains("you're making too many requests") ||
+        text.contains('you are making too many requests')) {
+      throw NgRateLimitException();
+    }
+  }
+
+  @visibleForTesting
+  void throwIfRateLimitedForTest(String body) => _throwIfRateLimited(body);
 }

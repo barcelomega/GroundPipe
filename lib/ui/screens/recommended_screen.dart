@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../data/model/playlist.dart';
 
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
@@ -49,10 +50,43 @@ class _RecommendedScreenState extends State<RecommendedScreen> {
               ),
             ],
           ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: DropdownButtonFormField<int>(
+                value: recommendations.selectedPlaylistId ?? -1,
+                decoration: const InputDecoration(
+                  labelText: 'Recommendation source',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                items: [
+                  const DropdownMenuItem<int>(
+                    value: -1,
+                    child: Text('All Likes'),
+                  ),
+                  ...recommendations.availablePlaylists.map(
+                    (Playlist playlist) => DropdownMenuItem<int>(
+                      value: playlist.id,
+                      child:
+                          Text(playlist.name, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                ],
+                onChanged: recommendations.isGathering
+                    ? null
+                    : (value) => recommendations.selectPlaylist(
+                          value == -1 ? null : value,
+                        ),
+              ),
+            ),
+          ),
         ],
         body: Column(
           children: [
-            if (recommendations.isGathering || recommendations.error != null)
+            if (recommendations.isGathering ||
+                recommendations.isLoadingCache ||
+                recommendations.error != null)
               Material(
                 color: Theme.of(context).colorScheme.surfaceContainerHigh,
                 child: Padding(
@@ -65,7 +99,9 @@ class _RecommendedScreenState extends State<RecommendedScreen> {
                           Expanded(
                             child: Text(recommendations.isGathering
                                 ? 'Gathering statistics, please wait'
-                                : recommendations.error!),
+                                : recommendations.isLoadingCache
+                                    ? 'Loading saved recommendations'
+                                    : recommendations.error!),
                           ),
                         ],
                       ),
@@ -105,7 +141,9 @@ class _RecommendedScreenState extends State<RecommendedScreen> {
                                 padding: const EdgeInsets.all(24),
                                 child: Text(recommendations.isGathering
                                     ? 'Recommendations will appear as data is collected.'
-                                    : 'Like tracks to build your recommendations.'),
+                                    : recommendations.isLoadingCache
+                                        ? 'Loading saved recommendations...'
+                                        : 'Like tracks to build your recommendations.'),
                               ),
                             ),
                           ),

@@ -1,8 +1,13 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/model/author.dart';
 import '../../data/model/track.dart';
 import '../../data/repository/ng_repository.dart';
+import '../../data/repository/local_db.dart';
 import '../../data/repository/timeline_feed.dart';
 import '../../viewmodel/authors_viewmodel.dart';
 import '../../viewmodel/library_viewmodel.dart';
@@ -50,6 +55,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   List<Track> _tracks = [];
   int _revision = -1;
   int _generation = 0;
+  final _db = LocalDb.instance;
   bool _loading = false;
   bool _refreshing = false;
   int _completedAuthors = 0;
@@ -57,6 +63,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
   String? _currentAuthor;
   bool _assembling = false;
   String? _error;
+  String? _cachedAuthorsFingerprint;
 
   @override
   void initState() {
@@ -70,9 +77,83 @@ class _TimelineScreenState extends State<TimelineScreen> {
 
   void _onAuthorsChanged() {
     if (!_authors.loaded || _revision == _authors.revision) return;
+    final previousAuthors = _cachedAuthorsFingerprint;
+    final fingerprint = _authorsFingerprint;
+    final changed = _cachedAuthorsFingerprint != null &&
+        _cachedAuthorsFingerprint != fingerprint;
+    _cachedAuthorsFingerprint = fingerprint;
     _revision = _authors.revision;
-    // Loading subscriptions must not trigger a network refresh. The timeline
-    // is fetched only after an explicit pull-to-refresh gesture.
+    if (changed) {
+      _feed = null;
+      if (mounted) setState(() {});
+      unawaited(_removeUnsubscribedAuthors(previousAuthors, fingerprint));
+    }
+    _restoreTimeline();
+  }
+
+  Future<void> _removeUnsubscribedAuthors(
+      String? previousFingerprint, String currentFingerprint) async {
+    if (previousFingerprint == null) return;
+    final previous =
+        previousFingerprint.split(',').where((id) => id.isNotEmpty).toSet();
+    final current =
+        currentFingerprint.split(',').where((id) => id.isNotEmpty).toSet();
+    final removed = previous.difference(current).map(Author.key).toSet();
+    if (removed.isEmpty) return;
+    if (!mounted) return;
+    setState(() {
+      _tracks.removeWhere((track) => removed
+          .contains(Author.key(track.authorUrl ?? track.artistAudioUrl)));
+    });
+  }
+
+  String get _authorsFingerprint => _authors.subscriptions
+      .where((author) => !author.blocked)
+      .map((author) => author.username)
+      .toList()
+      .join(',');
+
+  Future<void> _restoreTimeline() async {
+    if (!_authors.loaded || _feed != null) return;
+    final cached = await _db.getTimelineCache();
+    if (!mounted || cached == null) return;
+    try {
+      final json = jsonDecode(cached.$2) as Map<String, dynamic>;
+      final subscriptionsChanged = cached.$1 != _authorsFingerprint;
+      final generation = ++_generation;
+      final authors = _authors.subscriptions.where((a) => !a.blocked).toList();
+      final feed = TimelineFeed.fromJson(
+        authors: authors,
+        loadPage: _repo.getArtistTracksPage,
+        loadDate: _repo.loadPublicationDate,
+        json: json,
+      );
+      setState(() {
+        _feed = feed;
+        _tracks = feed.emittedTracks;
+        _tracks.sort((a, b) =>
+            (b.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+                a.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
+        _totalAuthors = feed.totalAuthors;
+        _completedAuthors = feed.completedAuthors;
+        _refreshing = false;
+        _loading = false;
+        _error = null;
+      });
+      context.read<TimelineProgress>().update(
+            isLoading: false,
+            completedAuthors: feed.completedAuthors,
+            totalAuthors: feed.totalAuthors,
+          );
+      await _db.saveTimelineCache(
+          _authorsFingerprint, jsonEncode(feed.toJson()));
+      if (generation != _generation) return;
+      if (subscriptionsChanged && feed.hasMore) {
+        await _loadMore();
+      }
+    } catch (_) {
+      await _db.clearTimelineCache();
+    }
   }
 
   bool _onTimelineScroll(ScrollNotification notification) {
@@ -88,6 +169,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
     if (!_authors.loaded) return;
     final generation = ++_generation;
     final authors = _authors.subscriptions.where((a) => !a.blocked).toList();
+    await _db.clearTimelineCache();
     if (authors.isEmpty) {
       setState(() {
         _tracks = [];
@@ -183,12 +265,17 @@ class _TimelineScreenState extends State<TimelineScreen> {
     try {
       final tracks = await feed.take(20);
       if (!mounted || generation != _generation) return;
+      await _db.saveTimelineCache(
+          _authorsFingerprint, jsonEncode(feed.toJson()));
       setState(() {
         if (_refreshing) {
           _tracks = tracks;
         } else {
           _tracks.addAll(tracks);
         }
+        _tracks.sort((a, b) =>
+            (b.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
+                a.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
         _refreshing = false;
         _loading = false;
         _currentAuthor = null;
@@ -198,12 +285,17 @@ class _TimelineScreenState extends State<TimelineScreen> {
             completedAuthors: _completedAuthors,
             totalAuthors: _totalAuthors,
           );
-    } catch (_) {
+    } catch (e) {
       if (!mounted || generation != _generation) return;
+      await _db.saveTimelineCache(
+          _authorsFingerprint, jsonEncode(feed.toJson()));
       setState(() {
-        _error = 'Could not load the timeline. Please try again.';
+        _error = e is NgRateLimitException
+            ? 'Newgrounds is rate-limiting requests. Timeline progress is saved; try again later.'
+            : 'Could not load the timeline. Please try again.';
         _refreshing = false;
         _loading = false;
+        _tracks = feed.emittedTracks;
         _currentAuthor = null;
       });
       context.read<TimelineProgress>().update(

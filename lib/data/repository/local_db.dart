@@ -21,7 +21,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'ngmusic.db');
     return openDatabase(
       path,
-      version: 13,
+      version: 18,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('''
@@ -165,6 +165,13 @@ class LocalDb {
                 'ALTER TABLE playlist_tracks ADD COLUMN author_url TEXT');
           }
         }
+        if (from < 14) {
+          await db.execute(_trackRecommendationsTable);
+        }
+        if (from < 15) await db.execute(_recommendationSourceScoresTable);
+        if (from < 16) await db.execute(_recommendationSourceStateTable);
+        if (from < 17) await db.execute(_timelineCacheTable);
+        if (from < 18) await db.execute(_recommendationCardsTable);
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -251,6 +258,11 @@ class LocalDb {
         await db.execute(_recommendationFavoritesTable);
         await db.execute(_recommendationAuthorStateTable);
         await db.execute(_recommendationScoresTable);
+        await db.execute(_trackRecommendationsTable);
+        await db.execute(_recommendationSourceScoresTable);
+        await db.execute(_recommendationSourceStateTable);
+        await db.execute(_timelineCacheTable);
+        await db.execute(_recommendationCardsTable);
       },
     );
   }
@@ -297,6 +309,150 @@ class LocalDb {
       complete INTEGER NOT NULL DEFAULT 0
     )
   ''';
+
+  static const _trackRecommendationsTable = '''
+    CREATE TABLE IF NOT EXISTS track_recommendations (
+      track_id TEXT PRIMARY KEY,
+      tracks_json TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL
+    )
+  ''';
+
+  static const _recommendationSourceScoresTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_source_scores (
+      source TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      score REAL NOT NULL,
+      PRIMARY KEY (source, track_id)
+    )
+  ''';
+
+  static const _recommendationSourceStateTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_source_state (
+      source TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL
+    )
+  ''';
+
+  static const _timelineCacheTable = '''
+    CREATE TABLE IF NOT EXISTS timeline_cache (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      fingerprint TEXT NOT NULL,
+      feed_json TEXT NOT NULL
+    )
+  ''';
+
+  static const _recommendationCardsTable = '''
+    CREATE TABLE IF NOT EXISTS recommendation_cards (
+      source TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      track_json TEXT NOT NULL,
+      PRIMARY KEY (source, track_id)
+    )
+  ''';
+
+  Future<(String, String)?> getTimelineCache() async {
+    final d = await db;
+    final rows = await d.query('timeline_cache', where: 'id = 1');
+    if (rows.isEmpty) return null;
+    return (
+      rows.first['fingerprint'] as String,
+      rows.first['feed_json'] as String
+    );
+  }
+
+  Future<void> saveTimelineCache(String fingerprint, String json) async {
+    final d = await db;
+    await d.insert(
+        'timeline_cache',
+        {
+          'id': 1,
+          'fingerprint': fingerprint,
+          'feed_json': json,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> clearTimelineCache() async {
+    final d = await db;
+    await d.delete('timeline_cache');
+  }
+
+  Future<String?> getRecommendationSourceFingerprint(String source) async {
+    final d = await db;
+    final rows = await d.query('recommendation_source_state',
+        columns: ['fingerprint'], where: 'source = ?', whereArgs: [source]);
+    return rows.isEmpty ? null : rows.first['fingerprint'] as String;
+  }
+
+  Future<void> setRecommendationSourceFingerprint(
+      String source, String fingerprint) async {
+    final d = await db;
+    await d.insert(
+        'recommendation_source_state',
+        {
+          'source': source,
+          'fingerprint': fingerprint,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String?> getTrackRecommendations(String trackId) async {
+    final d = await db;
+    final rows = await d.query('track_recommendations',
+        columns: ['tracks_json'], where: 'track_id = ?', whereArgs: [trackId]);
+    return rows.isEmpty ? null : rows.first['tracks_json'] as String;
+  }
+
+  Future<void> saveTrackRecommendations(String trackId, String json) async {
+    final d = await db;
+    await d.insert(
+        'track_recommendations',
+        {
+          'track_id': trackId,
+          'tracks_json': json,
+          'fetched_at': DateTime.now().millisecondsSinceEpoch,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, String>> getRecommendationCards(String source) async {
+    final d = await db;
+    final rows = await d.query('recommendation_cards',
+        columns: ['track_id', 'track_json'],
+        where: 'source = ?',
+        whereArgs: [source]);
+    return {
+      for (final row in rows)
+        row['track_id'] as String: row['track_json'] as String
+    };
+  }
+
+  Future<void> saveRecommendationCards(
+      String source, Map<String, String> trackJsonById) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final batch = txn.batch();
+      for (final entry in trackJsonById.entries) {
+        batch.insert(
+          'recommendation_cards',
+          {
+            'source': source,
+            'track_id': entry.key,
+            'track_json': entry.value,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> clearRecommendationCards(String source) async {
+    final d = await db;
+    await d.delete('recommendation_cards',
+        where: 'source = ?', whereArgs: [source]);
+  }
 
   Future<String?> getTrackGenre(String id) async {
     final d = await db;
@@ -384,6 +540,176 @@ class LocalDb {
     });
   }
 
+  Future<void> updateRecommendationAuthorState(String username,
+      {required String? nextUrl}) async {
+    final d = await db;
+    await d.insert(
+        'recommendation_author_state',
+        {
+          'username': username,
+          'next_url': nextUrl,
+          'complete': nextUrl == null ? 1 : 0,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> addRecommendationFavoriteIds(
+      String username, List<String> trackIds) async {
+    final d = await db;
+    final batch = d.batch();
+    for (final trackId in trackIds.toSet()) {
+      batch.insert(
+          'recommendation_author_favorites',
+          {
+            'username': username,
+            'track_id': trackId,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  Future<void> mergeRecommendationFavoritePage(
+      String username, List<String> trackIds,
+      {required String? nextUrl}) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final batch = txn.batch();
+      for (final trackId in trackIds.toSet()) {
+        batch.insert(
+            'recommendation_author_favorites',
+            {
+              'username': username,
+              'track_id': trackId,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      batch.insert(
+          'recommendation_author_state',
+          {
+            'username': username,
+            'next_url': nextUrl,
+            'complete': nextUrl == null ? 1 : 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> commitRecommendationFavoritePage(String username,
+      {required List<String> trackIds, required String? nextUrl}) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final batch = txn.batch();
+      for (final trackId in trackIds.toSet()) {
+        batch.insert(
+            'recommendation_author_favorites',
+            {
+              'username': username,
+              'track_id': trackId,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      batch.insert(
+          'recommendation_author_state',
+          {
+            'username': username,
+            'next_url': nextUrl,
+            'complete': nextUrl == null ? 1 : 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> resetRecommendationSource(String source) async {
+    final d = await db;
+    await d.delete('recommendation_source_scores',
+        where: 'source = ?', whereArgs: [source]);
+  }
+
+  Future<void> resetIncompleteRecommendationAuthors() async {
+    final d = await db;
+    await d.transaction((txn) async {
+      final rows = await txn.query('recommendation_author_state',
+          columns: ['username'],
+          where: 'complete = 0 AND username NOT LIKE ?',
+          whereArgs: ['%:%']);
+      for (final row in rows) {
+        final username = row['username'] as String;
+        await txn.delete('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]);
+        await txn.delete('recommendation_author_state',
+            where: 'username = ?', whereArgs: [username]);
+      }
+    });
+  }
+
+  Future<void> removeRecommendationAuthors(Iterable<String> usernames) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      for (final username in usernames) {
+        await txn.delete('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]);
+        await txn.delete('recommendation_author_state',
+            where: 'username = ?', whereArgs: [username]);
+      }
+    });
+  }
+
+  Future<void> removeRecommendationAuthorsAndRebuild(
+      Iterable<String> usernames, Map<String, double> authorWeights,
+      {String source = 'likes'}) async {
+    final d = await db;
+    await d.transaction((txn) async {
+      for (final username in usernames) {
+        await txn.delete('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]);
+        await txn.delete('recommendation_author_state',
+            where: 'username = ?', whereArgs: [username]);
+      }
+      await txn.delete('recommendation_source_scores',
+          where: 'source = ?', whereArgs: [source]);
+      if (authorWeights.isEmpty) return;
+      final rows = <Map<String, Object?>>[];
+      for (final username in authorWeights.keys) {
+        rows.addAll(await txn.query('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]));
+      }
+      final scores = <String, double>{};
+      for (final row in rows) {
+        final weight = authorWeights[row['username'] as String];
+        if (weight == null || weight <= 0) continue;
+        final id = row['track_id'] as String;
+        scores.update(id, (score) => score + weight, ifAbsent: () => weight);
+      }
+      final batch = txn.batch();
+      for (final entry in scores.entries) {
+        batch.insert('recommendation_source_scores', {
+          'source': source,
+          'track_id': entry.key,
+          'score': entry.value,
+        });
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> resetIncompleteRecommendationSourceAuthors(String source) async {
+    final d = await db;
+    final rows = await d.query('recommendation_author_state',
+        columns: ['username'],
+        where: 'complete = 0 AND username LIKE ?',
+        whereArgs: ['$source:%']);
+    for (final row in rows) {
+      final username = row['username'] as String;
+      await d.delete('recommendation_author_favorites',
+          where: 'username = ?', whereArgs: [username]);
+      await d.delete('recommendation_author_state',
+          where: 'username = ?', whereArgs: [username]);
+    }
+  }
+
   Future<void> saveRecommendationFavoriteIds(
       String username, List<String> trackIds) async {
     final d = await db;
@@ -401,13 +727,18 @@ class LocalDb {
     });
   }
 
-  Future<void> rebuildRecommendationScores(
-      Map<String, double> authorWeights) async {
+  Future<void> rebuildRecommendationScores(Map<String, double> authorWeights,
+      {String source = 'likes'}) async {
     final d = await db;
     await d.transaction((txn) async {
-      await txn.delete('recommendation_track_scores');
+      await txn.delete('recommendation_source_scores',
+          where: 'source = ?', whereArgs: [source]);
       if (authorWeights.isEmpty) return;
-      final rows = await txn.query('recommendation_author_favorites');
+      final rows = <Map<String, Object?>>[];
+      for (final username in authorWeights.keys) {
+        rows.addAll(await txn.query('recommendation_author_favorites',
+            where: 'username = ?', whereArgs: [username]));
+      }
       final scores = <String, double>{};
       for (final row in rows) {
         final weight = authorWeights[row['username'] as String];
@@ -418,7 +749,8 @@ class LocalDb {
       }
       final batch = txn.batch();
       for (final entry in scores.entries) {
-        batch.insert('recommendation_track_scores', {
+        batch.insert('recommendation_source_scores', {
+          'source': source,
           'track_id': entry.key,
           'score': entry.value,
         });
@@ -428,10 +760,14 @@ class LocalDb {
   }
 
   Future<List<Map<String, dynamic>>> getRecommendationScores(
-      {int limit = 200, int offset = 0}) async {
+      {int limit = 200, int offset = 0, String source = 'likes'}) async {
     final d = await db;
-    return d.query('recommendation_track_scores',
-        orderBy: 'score DESC, track_id DESC', limit: limit, offset: offset);
+    return d.query('recommendation_source_scores',
+        where: 'source = ?',
+        whereArgs: [source],
+        orderBy: 'score DESC, track_id DESC',
+        limit: limit,
+        offset: offset);
   }
 
   Future<List<Playlist>> getPlaylists() async {

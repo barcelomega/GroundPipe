@@ -113,6 +113,12 @@ class CacheManager {
     return null;
   }
 
+  /// Persist recommendation/listing art without downloading or pinning audio.
+  Future<String?> cacheTrackIcon(Track track) async {
+    final cacheDir = await getCacheDir();
+    return _cacheIcon(track, cacheDir);
+  }
+
   /// Cache a track
   Future<String?> cacheTrack(
     Track track, {

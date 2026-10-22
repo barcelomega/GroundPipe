@@ -81,6 +81,29 @@ void main() {
     expect(next, 'https://author.newgrounds.com/audio?page=2');
   });
 
+  test('artist page parser accepts an HTML response instead of AJAX JSON', () {
+    final (tracks, next) = NgRepository().parseArtistTracksPage('''
+      <!doctype html>
+      <html><body>
+        <div class="audio-wrapper">
+          <a class="item-audiosubmission" href="/audio/listen/456" title="HTML track">
+            <img src="https://aicon.ngfiles.com/0/456.webp">
+            <div class="item-details-meta"><dd><strong>Song</strong></dd><dd>Ambient</dd></div>
+          </a>
+          <span data-audio-duration="210" data-audio-type="3"></span>
+        </div>
+        <a href="?page=2">Next</a>
+      </body></html>
+    ''', 'SampleArtist');
+
+    expect(tracks, hasLength(1));
+    expect(tracks.single.id, '456');
+    expect(tracks.single.title, 'HTML track');
+    expect(tracks.single.duration, 210);
+    expect(tracks.single.genre, 'Ambient');
+    expect(next, 'https://sampleartist.newgrounds.com/audio?page=2');
+  });
+
   test('profile avatars prefer the author image and support legacy SVG icons',
       () {
     final repo = NgRepository();
@@ -184,6 +207,30 @@ void main() {
     expect((await feed.take(2)).map((track) => track.id), ['1', '2']);
     expect(requestedPages, [1, 4]);
     expect(feed.hasMore, false);
+  });
+
+  test('timeline feed persists cursors and emitted tracks', () async {
+    final authors = const [Author(username: 'a', name: 'A')];
+    final loader = (String artist, {int page = 1}) async => (
+          [song('$page', artist)],
+          page == 1 ? 'https://a.newgrounds.com/audio?page=2' : null
+        );
+    final dateLoader = (Track track) async {
+      track.publishedAt = DateTime.utc(2026, 10, 3 - int.parse(track.id));
+    };
+    final feed =
+        TimelineFeed(authors: authors, loadPage: loader, loadDate: dateLoader);
+    expect((await feed.take(1)).single.id, '1');
+
+    final restored = TimelineFeed.fromJson(
+      authors: authors,
+      loadPage: loader,
+      loadDate: dateLoader,
+      json: jsonDecode(jsonEncode(feed.toJson())) as Map<String, dynamic>,
+    );
+    expect(restored.emittedTracks.single.id, '1');
+    expect((await restored.take(1)).single.id, '2');
+    expect(restored.isComplete, true);
   });
 
   test('failed timeline batch can be retried without losing consumed tracks',
