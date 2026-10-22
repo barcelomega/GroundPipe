@@ -35,6 +35,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
   String? _iconUrl;
   String? _coverPath;
   int? _revision;
+  bool _cachingIcon = false;
 
   @override
   Widget build(BuildContext context) {
@@ -47,6 +48,7 @@ class _TrackArtworkState extends State<TrackArtwork> {
       _revision = revision;
       _iconUrl = widget.track.iconUrl;
       _coverPath = widget.track.localCoverPath;
+      _cachingIcon = false;
       _localArtwork = _resolveLocalArtwork();
     }
     final colors = Theme.of(context).colorScheme;
@@ -78,16 +80,19 @@ class _TrackArtworkState extends State<TrackArtwork> {
               );
             }
             final urls = <String>{
-              if (widget.compact) widget.track.aIconUrl
-              else widget.track.coverUrl,
+              if (widget.compact)
+                widget.track.aIconUrl
+              else
+                widget.track.coverUrl,
               ...widget.track.artworkUrls,
-              if (!widget.compact) widget.track.remoteIconUrl,
+              widget.track.remoteIconUrl,
             }.where((url) => url.contains('://')).toList();
             if (urls.isEmpty) return fallback;
             return _FallbackArtwork(
               urls: urls,
               fallback: fallback,
               placeholderColor: colors.surfaceContainerHighest,
+              onImageLoaded: widget.compact ? _cacheLoadedIcon : null,
             );
           },
         ),
@@ -100,14 +105,38 @@ class _TrackArtworkState extends State<TrackArtwork> {
     if (widget.compact) {
       final icon = await CacheManager.instance.getCachedIconPath(track.id);
       if (icon != null) return icon;
-      if (track.hasLocalIcon) return track.localIconPath;
+      if (track.hasLocalIcon && await File(track.localIconPath).exists()) {
+        return track.localIconPath;
+      }
       final cover = track.localCoverPath;
-      if (cover != null && cover.isNotEmpty) return cover;
+      if (cover != null && cover.isNotEmpty && await File(cover).exists()) {
+        return cover;
+      }
       return CacheManager.instance.getCachedArtworkPath(track.id);
     }
     final cover = track.localCoverPath;
-    if (cover != null && cover.isNotEmpty) return cover;
+    if (cover != null && cover.isNotEmpty && await File(cover).exists()) {
+      return cover;
+    }
     return CacheManager.instance.getCachedArtworkPath(track.id);
+  }
+
+  Future<void> _cacheLoadedIcon() async {
+    if (_cachingIcon) return;
+    _cachingIcon = true;
+    try {
+      final cache = CacheManager.instance;
+      final path = cache.isPersistentArtworkTrack(widget.track.id)
+          ? await cache.cachePermanentTrackIcon(widget.track)
+          : await cache.cacheTemporaryTrackIcon(widget.track);
+      if (mounted && path != null) {
+        setState(() => _localArtwork = Future.value(path));
+      }
+    } catch (_) {
+      // Artwork remains usable from the network image cache if disk caching fails.
+    } finally {
+      _cachingIcon = false;
+    }
   }
 }
 
@@ -118,11 +147,13 @@ class _FallbackArtwork extends StatefulWidget {
   final List<String> urls;
   final Widget fallback;
   final Color placeholderColor;
+  final VoidCallback? onImageLoaded;
 
   const _FallbackArtwork({
     required this.urls,
     required this.fallback,
     required this.placeholderColor,
+    this.onImageLoaded,
   });
 
   @override
@@ -155,6 +186,10 @@ class _FallbackArtworkState extends State<_FallbackArtwork> {
     return CachedNetworkImage(
       imageUrl: widget.urls[_index],
       fit: BoxFit.cover,
+      imageBuilder: (context, imageProvider) {
+        widget.onImageLoaded?.call();
+        return Image(image: imageProvider, fit: BoxFit.cover);
+      },
       placeholder: (_, __) => ColoredBox(
         color: widget.placeholderColor,
         child: widget.fallback,

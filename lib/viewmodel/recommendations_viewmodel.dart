@@ -323,6 +323,7 @@ class RecommendationsViewModel extends ChangeNotifier {
           track.id: jsonEncode(NgRepository.trackToJson(track)),
       };
       await _db.saveRecommendationCards(source, encoded);
+      CacheManager.instance.schedulePermanentArtworkSync();
       cached.addAll(encoded);
     }
     final byId = <String, Track>{};
@@ -377,6 +378,7 @@ class RecommendationsViewModel extends ChangeNotifier {
     final currentArtworkIds = await _db.getRecommendationCardTrackIds();
     currentArtworkIds.addAll(await _db.getRecentRecommendationArtworkIds());
     await CacheManager.instance.pruneRecommendationIcons(currentArtworkIds);
+    CacheManager.instance.schedulePermanentArtworkSync();
   }
 
   Future<void> _cacheRecommendationArtwork(

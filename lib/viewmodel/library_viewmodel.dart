@@ -62,6 +62,7 @@ class LibraryViewModel extends ChangeNotifier {
     final rows = await blacklisted.query('blacklisted_tracks');
     _blacklistedIds.addAll(rows.map((r) => r['track_id'] as String));
 
+    _cache.schedulePermanentArtworkSync();
     isLoading = false;
     notifyListeners();
   }

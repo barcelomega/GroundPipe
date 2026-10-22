@@ -11,6 +11,7 @@ import '../model/ng_review.dart';
 import '../model/playlist.dart';
 import 'ng_auth.dart';
 import 'local_db.dart';
+import 'cache_manager.dart';
 import 'dart:async';
 import 'dart:collection';
 import '../model/author.dart';
@@ -151,6 +152,7 @@ class NgRepository {
     await LocalDb.instance.saveTrackRecommendations(
         trackId, jsonEncode(tracks.map(trackToJson).toList()));
     await LocalDb.instance.pruneTrackRecommendationsToRecent30();
+    CacheManager.instance.schedulePermanentArtworkSync();
     return tracks;
   }
 

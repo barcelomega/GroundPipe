@@ -112,7 +112,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     var updated = false;
     for (final track in tracks) {
       try {
-        final localPath = await CacheManager.instance.cacheTrackIcon(track);
+        final localPath =
+            await CacheManager.instance.cachePermanentTrackIcon(track);
         if (localPath != null) {
           track.iconUrl = localPath;
           updated = true;

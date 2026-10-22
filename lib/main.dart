@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'data/repository/cache_manager.dart';
 import 'player/ng_audio_handler.dart';
 import 'ui/screens/discover_screen_new.dart';
 import 'ui/screens/library_screen_new.dart';
@@ -18,6 +22,15 @@ void main() {
   // Cap Flutter's decoded image cache; metadata LRUs in NgRepository have
   // separate small entry limits.
   PaintingBinding.instance.imageCache.maximumSizeBytes = 384 * 1024 * 1024;
+  // Wipe transient previews from the previous run and refresh the permanent
+  // icon store without delaying the first frame.
+  unawaited(CacheManager.instance.initializeArtworkCaches());
+  AppLifecycleListener(
+    onExitRequested: () async {
+      await CacheManager.instance.clearTemporaryArtwork();
+      return AppExitResponse.exit;
+    },
+  );
   runApp(NgMusicApp(handler: NgAudioHandler()));
 }
 

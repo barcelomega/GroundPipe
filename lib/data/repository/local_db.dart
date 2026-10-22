@@ -458,6 +458,32 @@ class LocalDb {
     return rows.map((row) => row['track_id'] as String).toSet();
   }
 
+  Future<Set<String>> getPersistentArtworkTrackIds() async {
+    final d = await db;
+    final ids = <String>{};
+    for (final table in [
+      'staged_likes',
+      'playlist_tracks',
+      'recommendation_cards',
+    ]) {
+      final rows = await d.query(table, columns: ['track_id']);
+      ids.addAll(rows.map((row) => row['track_id'] as String));
+    }
+    ids.addAll(await getRecentRecommendationArtworkIds());
+    final timeline = await getTimelineCache();
+    if (timeline != null) {
+      try {
+        final feed = jsonDecode(timeline.$2) as Map<String, dynamic>;
+        for (final track in (feed['emitted'] as List? ?? const [])) {
+          if (track is Map && track['id'] is String) {
+            ids.add(track['id'] as String);
+          }
+        }
+      } catch (_) {}
+    }
+    return ids;
+  }
+
   Future<Set<String>> getRecommendationSourcesInUse() async {
     final d = await db;
     final rows = await d.rawQuery(

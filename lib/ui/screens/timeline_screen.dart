@@ -8,6 +8,7 @@ import '../../data/model/author.dart';
 import '../../data/model/track.dart';
 import '../../data/repository/ng_repository.dart';
 import '../../data/repository/local_db.dart';
+import '../../data/repository/cache_manager.dart';
 import '../../data/repository/timeline_feed.dart';
 import '../../viewmodel/authors_viewmodel.dart';
 import '../../viewmodel/library_viewmodel.dart';
@@ -146,12 +147,14 @@ class _TimelineScreenState extends State<TimelineScreen> {
           );
       await _db.saveTimelineCache(
           _authorsFingerprint, jsonEncode(feed.toJson()));
+      CacheManager.instance.schedulePermanentArtworkSync();
       if (generation != _generation) return;
       if (subscriptionsChanged && feed.hasMore) {
         await _loadMore();
       }
     } catch (_) {
       await _db.clearTimelineCache();
+      CacheManager.instance.schedulePermanentArtworkSync();
     }
   }
 
@@ -266,6 +269,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
       if (!mounted || generation != _generation) return;
       await _db.saveTimelineCache(
           _authorsFingerprint, jsonEncode(feed.toJson()));
+      CacheManager.instance.schedulePermanentArtworkSync();
       setState(() {
         if (_refreshing) {
           _tracks = tracks;
@@ -288,6 +292,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
       if (!mounted || generation != _generation) return;
       await _db.saveTimelineCache(
           _authorsFingerprint, jsonEncode(feed.toJson()));
+      CacheManager.instance.schedulePermanentArtworkSync();
       setState(() {
         _error = e is NgRateLimitException
             ? 'Newgrounds is rate-limiting requests. Timeline progress is saved; try again later.'
