@@ -1,7 +1,7 @@
 # GroundPipe
 
 <img width="246" height="512" alt="1" src="https://github.com/user-attachments/assets/89066d85-e026-4424-b91f-f7dd33428d22" />
-<img width="246" height="512" alt="2" src="https://github.com/user-attachments/assets/267c353d-df6f-4664-a8f7-46df9de02263" />
+<img width="246" height="512" alt="image" src="https://github.com/user-attachments/assets/7b2a79d3-d5c1-4650-83de-555627e146eb" />
 <img width="246" height="512" alt="3" src="https://github.com/user-attachments/assets/80955102-e578-463e-99be-5733f80be80b" />
 
 GroundPipe is an unofficial Android music player for the [Newgrounds Audio Portal](https://www.newgrounds.com/audio). It browses Newgrounds audio and streams tracks directly from Newgrounds and its CDN.
