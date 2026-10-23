@@ -46,10 +46,11 @@ class NgMusicApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AuthorsViewModel()),
+        ChangeNotifierProvider(create: (_) => LibraryViewModel()),
         ChangeNotifierProvider(
             create: (context) => NgViewModel(handler,
-                authors: context.read<AuthorsViewModel>())),
-        ChangeNotifierProvider(create: (_) => LibraryViewModel()),
+                authors: context.read<AuthorsViewModel>(),
+                library: context.read<LibraryViewModel>())),
         ChangeNotifierProvider(create: (_) => TimelineProgress()),
         ChangeNotifierProvider(
           create: (context) => RecommendationsViewModel(

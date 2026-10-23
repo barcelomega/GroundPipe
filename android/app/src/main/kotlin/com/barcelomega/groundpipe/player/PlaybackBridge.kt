@@ -21,6 +21,10 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
         var instance: PlaybackBridge? = null
     }
 
+    @Volatile
+    var isCurrentTrackLiked = false
+        private set
+
     private val methodChannel = MethodChannel(messenger, "ngmusic/player")
     private val eventChannel = EventChannel(messenger, "ngmusic/player/events")
 
@@ -89,6 +93,11 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
                     result.success(null)
                 }
                 "getPosition" -> result.success(controller?.currentPosition ?: 0L)
+                "setLiked" -> {
+                    isCurrentTrackLiked = call.argument<Boolean>("liked") ?: false
+                    PlaybackService.instance?.setLiked(isCurrentTrackLiked)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -121,6 +130,9 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
             .build()
         controller?.run {
             setMediaItem(mediaItem)
+            // Replace the previous track's cached data now that the player
+            // has released it, keeping only the track that is being started.
+            PlaybackCache.clearExcept(Uri.parse(url).toString())
             prepare()
             play()
         }

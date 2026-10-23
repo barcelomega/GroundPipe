@@ -3,78 +3,78 @@ import '../model/track.dart';
 
 typedef ArtistPageLoader = Future<(List<Track>, String?)>
     Function(String artist, {int page});
-typedef PublicationDateLoader = Future<void> Function(Track track);
 
 class _AuthorFeed {
   final Author author;
-  final tracks = <Track>[];
-  final trackIds = <String>{};
-  int page = 1;
-  int index = 0;
-  bool hasMore = true;
+  bool loaded = false;
 
   _AuthorFeed(this.author);
 }
 
-/// Merge newest-first author streams by real publication time, not track ID.
+/// Builds a newest-first timeline from one page per author.
+///
+/// Newgrounds track IDs grow monotonically, so a larger ID means a later
+/// submission. All tracks from the loaded pages go into one pool, which is
+/// sorted by ID and capped at [candidateLimit] entries.
 class TimelineFeed {
+  static const int candidateLimit = 250;
+  static const _cacheVersion = 3;
+  static const _loadBatchSize = 4;
+
   final ArtistPageLoader loadPage;
-  final PublicationDateLoader loadDate;
   final List<_AuthorFeed> _sources;
+  final _pool = <Track>[];
   final _seen = <String>{};
   final List<Track> _emitted = [];
   final void Function(int completed, int total)? onProgress;
   final void Function()? onMerging;
   void Function(String artist)? onAuthorChanged;
-  final Set<String> _loadedAuthors = {};
   String? currentAuthor;
 
   TimelineFeed({
     required List<Author> authors,
     required this.loadPage,
-    required this.loadDate,
     this.onProgress,
     this.onMerging,
   }) : _sources = authors.map(_AuthorFeed.new).toList();
 
   int get totalAuthors => _sources.length;
   List<Track> get emittedTracks => List.unmodifiable(_emitted);
-  int get loadedPages =>
-      _sources.fold(0, (total, source) => total + source.page - 1);
-  int get loadedTrackCount =>
-      _sources.fold(0, (total, source) => total + source.tracks.length);
-  bool get isComplete => _sources.every(
-      (source) => !source.hasMore && source.index >= source.tracks.length);
-  int get completedAuthors => _loadedAuthors.length;
+  int get loadedPages => _sources.where((source) => source.loaded).length;
+  int get loadedTrackCount => _emitted.length + _pool.length;
+  bool get isComplete =>
+      _pool.isEmpty && _sources.every((source) => source.loaded);
+  int get completedAuthors => loadedPages;
   bool get hasMore =>
-      _sources.any((s) => s.index < s.tracks.length || s.hasMore);
+      _pool.isNotEmpty || _sources.any((source) => !source.loaded);
 
-  Future<Track?> _head(_AuthorFeed source) async {
-    while (source.index >= source.tracks.length && source.hasMore) {
-      _setCurrentAuthor(source);
-      final (tracks, next) =
-          await loadPage(source.author.username, page: source.page);
-      final fresh = tracks.where((t) => source.trackIds.add(t.id)).toList();
-      source.tracks.addAll(fresh);
-      final nextPage =
-          int.tryParse(Uri.tryParse(next ?? '')?.queryParameters['page'] ?? '');
-      source.page = nextPage ?? source.page + 1;
-      source.hasMore = next != null;
+  Future<void> _ensureLoaded() async {
+    final pending = _sources.where((source) => !source.loaded).toList();
+    if (pending.isEmpty) return;
+
+    var loadedAny = false;
+    for (var start = 0; start < pending.length; start += _loadBatchSize) {
+      final batch = pending.skip(start).take(_loadBatchSize);
+      await Future.wait(batch.map((source) async {
+        _setCurrentAuthor(source);
+        final (tracks, _) = await loadPage(source.author.username, page: 1);
+        for (final track in tracks) {
+          if (track.authorUrl == null || track.authorUrl!.trim().isEmpty) {
+            track.authorUrl =
+                'https://${source.author.username}.newgrounds.com/audio';
+          }
+          if (_seen.add(track.id)) _pool.add(track);
+        }
+        source.loaded = true;
+        loadedAny = true;
+        onProgress?.call(completedAuthors, totalAuthors);
+      }));
     }
-    if (source.index >= source.tracks.length) {
-      _markAuthorLoaded(source);
-      return null;
+
+    if (loadedAny) {
+      _sortAndCap();
+      onMerging?.call();
     }
-    final track = source.tracks[source.index];
-    if (track.publishedAt == null) {
-      _setCurrentAuthor(source);
-      await loadDate(track);
-    }
-    if (track.publishedAt == null) {
-      throw const FormatException('Missing publication date');
-    }
-    _markAuthorLoaded(source);
-    return track;
   }
 
   void _setCurrentAuthor(_AuthorFeed source) {
@@ -82,131 +82,103 @@ class TimelineFeed {
     onAuthorChanged?.call(currentAuthor!);
   }
 
-  void _markAuthorLoaded(_AuthorFeed source) {
-    if (_loadedAuthors.add(source.author.username)) {
-      onProgress?.call(completedAuthors, totalAuthors);
+  Future<List<Track>> take(int count) async {
+    if (count <= 0) return [];
+    await _ensureLoaded();
+    if (_pool.isEmpty) return [];
+
+    final takeCount = count < _pool.length ? count : _pool.length;
+    final output = _pool.sublist(0, takeCount);
+    _pool.removeRange(0, takeCount);
+    _emitted.addAll(output);
+    return output;
+  }
+
+  void _sortAndCap() {
+    _pool.sort(_compareNewest);
+    final remaining = candidateLimit - _emitted.length;
+    if (remaining <= 0) {
+      _pool.clear();
+    } else if (_pool.length > remaining) {
+      _pool.removeRange(remaining, _pool.length);
     }
   }
 
-  Future<List<Track>> take(int count) async {
-    if (count <= 0) return [];
-    final output = <Track>[];
-    // Keep failed batches retryable without losing tracks already consumed.
-    final positions = _sources.map((s) => s.index).toList();
-    final seen = {..._seen};
-    final emitted = [..._emitted];
-    try {
-      final heads = <Track?>[];
-      for (var start = 0; start < _sources.length; start += 4) {
-        heads
-            .addAll(await Future.wait(_sources.skip(start).take(4).map(_head)));
-      }
-      onMerging?.call();
-      while (output.length < count) {
-        int? newest;
-        for (var i = 0; i < heads.length; i++) {
-          final track = heads[i];
-          if (track == null) continue;
-          if (newest == null ||
-              track.publishedAt!.isAfter(heads[newest]!.publishedAt!)) {
-            newest = i;
-          }
-        }
-        if (newest == null) break;
-        final track = heads[newest]!;
-        if (_seen.add(track.id)) {
-          output.add(track);
-          _emitted.add(track);
-        }
-        _sources[newest].index++;
-        // The next head is only needed if this batch still needs tracks.
-        if (output.length == count) break;
-        heads[newest] = await _head(_sources[newest]);
-      }
-      return output;
-    } catch (_) {
-      for (var i = 0; i < _sources.length; i++) {
-        _sources[i].index = positions[i];
-      }
-      _seen
-        ..clear()
-        ..addAll(seen);
-      _emitted
-        ..clear()
-        ..addAll(emitted);
-      rethrow;
-    }
+  static int _compareNewest(Track a, Track b) {
+    final aId = int.tryParse(a.id);
+    final bId = int.tryParse(b.id);
+    if (aId != null && bId != null) return bId.compareTo(aId);
+    if (aId != null) return -1;
+    if (bId != null) return 1;
+    return b.id.compareTo(a.id);
   }
 
   Map<String, dynamic> toJson() => {
+        'version': _cacheVersion,
         'currentAuthor': currentAuthor,
         'authors': [
           for (final source in _sources)
             {
               'username': source.author.username,
-              'page': source.page,
-              'index': source.index,
-              'hasMore': source.hasMore,
-              'tracks': source.tracks.map(_trackToJson).toList(),
+              'loaded': source.loaded,
             }
         ],
         'seen': _seen.toList(),
+        'pool': _pool.map(_trackToJson).toList(),
         'emitted': _emitted.map(_trackToJson).toList(),
       };
 
   factory TimelineFeed.fromJson({
     required List<Author> authors,
     required ArtistPageLoader loadPage,
-    required PublicationDateLoader loadDate,
     required Map<String, dynamic> json,
     void Function(int completed, int total)? onProgress,
     void Function()? onMerging,
   }) {
+    if (json['version'] != _cacheVersion) {
+      throw const FormatException('Unsupported timeline cache');
+    }
     final feed = TimelineFeed(
       authors: authors,
       loadPage: loadPage,
-      loadDate: loadDate,
       onProgress: onProgress,
       onMerging: onMerging,
     );
-    final data = (json['authors'] as List).cast<Map>();
+    final data = (json['authors'] as List? ?? const []).cast<Map>();
     for (final row in data) {
-      _AuthorFeed? source;
-      for (final candidate in feed._sources) {
-        if (candidate.author.username == row['username']) {
-          source = candidate;
+      final username = row['username'] as String?;
+      final loaded = row['loaded'] as bool? ?? false;
+      for (final source in feed._sources) {
+        if (source.author.username == username) {
+          source.loaded = loaded;
           break;
         }
       }
-      if (source == null) continue;
-      final tracks = (row['tracks'] as List)
-          .cast<Map>()
-          .map((track) => trackFromJson(Map<String, dynamic>.from(track)))
-          .toList();
-      source
-        ..tracks.addAll(tracks)
-        ..trackIds.addAll(tracks.map((track) => track.id))
-        ..page = row['page'] as int
-        ..index = row['index'] as int
-        ..hasMore = row['hasMore'] as bool;
     }
     feed.currentAuthor = json['currentAuthor'] as String?;
-    final activeTrackIds = feed._sources
-        .expand((source) => source.tracks)
-        .map((track) => track.id)
-        .toSet();
-    feed._seen.addAll(
-        (json['seen'] as List).cast<String>().where(activeTrackIds.contains));
-    feed._emitted.addAll((json['emitted'] as List)
+    final allowedAuthors =
+        feed._sources.map((source) => source.author.username).toSet();
+    List<Track> parseTracks(String key) => (json[key] as List? ?? const [])
         .cast<Map>()
         .map((track) => trackFromJson(Map<String, dynamic>.from(track)))
-        .where((track) => activeTrackIds.contains(track.id)));
-    for (final source in feed._sources) {
-      if (!source.hasMore && source.index >= source.tracks.length) {
-        feed._loadedAuthors.add(source.author.username);
-      }
-    }
+        .where((track) => _belongsTo(track, allowedAuthors))
+        .toList();
+
+    feed._emitted.addAll(parseTracks('emitted'));
+    final emittedIds = feed._emitted.map((track) => track.id).toSet();
+    feed._pool.addAll(
+        parseTracks('pool').where((track) => !emittedIds.contains(track.id)));
+    feed._seen.addAll((json['seen'] as List? ?? const []).cast<String>());
+    feed._seen.addAll(feed._emitted.map((track) => track.id));
+    feed._seen.addAll(feed._pool.map((track) => track.id));
+    feed._sortAndCap();
     return feed;
+  }
+
+  static bool _belongsTo(Track track, Set<String> usernames) {
+    final raw = track.authorUrl ?? track.artistAudioUrl;
+    if (raw.trim().isEmpty) return true;
+    return usernames.contains(Author.key(raw));
   }
 
   static Map<String, dynamic> _trackToJson(Track track) => {
@@ -218,7 +190,6 @@ class TimelineFeed {
         'duration': track.duration,
         'audioType': track.audioType,
         'genre': track.genre,
-        'publishedAt': track.publishedAt?.toIso8601String(),
       };
 
   static Track trackFromJson(Map<String, dynamic> json) => Track(
@@ -230,5 +201,5 @@ class TimelineFeed {
         duration: json['duration'] as int,
         audioType: json['audioType'] as int,
         genre: json['genre'] as String? ?? '',
-      )..publishedAt = DateTime.tryParse(json['publishedAt'] as String? ?? '');
+      );
 }

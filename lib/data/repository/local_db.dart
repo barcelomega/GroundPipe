@@ -8,6 +8,13 @@ import '../model/track.dart';
 import '../model/author.dart';
 
 class LocalDb {
+  /// Timeline keeps the first page of artwork in the permanent store. Older
+  /// entries are loaded from the network when the user scrolls further.
+  static const int timelineArtworkCacheLimit = 25;
+
+  /// Per-author recommendation cache is capped at the newest 500 favorites.
+  static const int recommendationFavoriteLimit = 500;
+
   static LocalDb? _instance;
   static LocalDb get instance => _instance ??= LocalDb._();
   LocalDb._();
@@ -23,7 +30,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'ngmusic.db');
     return openDatabase(
       path,
-      version: 18,
+      version: 20,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('''
@@ -174,6 +181,32 @@ class LocalDb {
         if (from < 16) await db.execute(_recommendationSourceStateTable);
         if (from < 17) await db.execute(_timelineCacheTable);
         if (from < 18) await db.execute(_recommendationCardsTable);
+        if (from < 19) {
+          final columns = await db
+              .rawQuery('PRAGMA table_info(recommendation_author_state)');
+          if (!columns.any((row) => row['name'] == 'favorite_count')) {
+            await db.execute(
+              'ALTER TABLE recommendation_author_state '
+              'ADD COLUMN favorite_count INTEGER',
+            );
+          }
+        }
+        if (from < 20) {
+          final columns = await db
+              .rawQuery('PRAGMA table_info(recommendation_author_favorites)');
+          if (!columns.any((row) => row['name'] == 'favorite_rank')) {
+            await db.execute(
+              'ALTER TABLE recommendation_author_favorites '
+              'ADD COLUMN favorite_rank INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+          // Existing rows were inserted page by page from newest to oldest,
+          // so their rowid already reflects the favorite order.
+          await db.execute(
+            'UPDATE recommendation_author_favorites '
+            'SET favorite_rank = rowid WHERE favorite_rank = 0',
+          );
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -293,6 +326,7 @@ class LocalDb {
     CREATE TABLE IF NOT EXISTS recommendation_author_favorites (
       username TEXT NOT NULL,
       track_id TEXT NOT NULL,
+      favorite_rank INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (username, track_id)
     )
   ''';
@@ -308,7 +342,8 @@ class LocalDb {
     CREATE TABLE IF NOT EXISTS recommendation_author_state (
       username TEXT PRIMARY KEY,
       next_url TEXT,
-      complete INTEGER NOT NULL DEFAULT 0
+      complete INTEGER NOT NULL DEFAULT 0,
+      favorite_count INTEGER
     )
   ''';
 
@@ -476,7 +511,8 @@ class LocalDb {
     if (timeline != null) {
       try {
         final feed = jsonDecode(timeline.$2) as Map<String, dynamic>;
-        for (final track in (feed['emitted'] as List? ?? const [])) {
+        final emitted = (feed['emitted'] as List? ?? const []);
+        for (final track in emitted.take(timelineArtworkCacheLimit)) {
           if (track is Map && track['id'] is String) {
             ids.add(track['id'] as String);
           }
@@ -662,10 +698,59 @@ class LocalDb {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
+  /// Subscribes imported authors without dropping their blocked flag.
+  Future<void> importSubscriptions(List<Author> authors) async {
+    if (authors.isEmpty) return;
+    final d = await db;
+    await d.transaction((txn) async {
+      for (final author in authors) {
+        final existing = await txn.query(
+          'author_preferences',
+          columns: ['username'],
+          where: 'username = ?',
+          whereArgs: [author.username],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          await txn.insert('author_preferences', {
+            'username': author.username,
+            'name': author.name,
+            'subscribed': 1,
+            'blocked': 0,
+          });
+        } else {
+          await txn.update(
+            'author_preferences',
+            {'name': author.name, 'subscribed': 1},
+            where: 'username = ?',
+            whereArgs: [author.username],
+          );
+        }
+      }
+    });
+  }
+
+  /// Removes every subscription while keeping blocked authors blocked.
+  Future<void> clearSubscriptions() async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.update('author_preferences', {'subscribed': 0});
+      await txn.delete(
+        'author_preferences',
+        where: 'subscribed = 0 AND blocked = 0',
+      );
+    });
+  }
+
   Future<List<String>> getRecommendationFavoriteIds(String username) async {
     final d = await db;
-    final rows = await d.query('recommendation_author_favorites',
-        columns: ['track_id'], where: 'username = ?', whereArgs: [username]);
+    final rows = await d.query(
+      'recommendation_author_favorites',
+      columns: ['track_id'],
+      where: 'username = ?',
+      whereArgs: [username],
+      orderBy: 'favorite_rank ASC, track_id ASC',
+    );
     return rows.map((row) => row['track_id'] as String).toList();
   }
 
@@ -677,31 +762,48 @@ class LocalDb {
     return (rows.first['next_url'] as String?, rows.first['complete'] == 1);
   }
 
+  Future<int?> getRecommendationAuthorFavoriteCount(String username) async {
+    final d = await db;
+    final rows = await d.query('recommendation_author_state',
+        columns: ['favorite_count'],
+        where: 'username = ?',
+        whereArgs: [username],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    return rows.first['favorite_count'] as int?;
+  }
+
+  Future<void> setRecommendationAuthorFavoriteCount(
+      String username, int count) async {
+    final d = await db;
+    final updated = await d.update(
+      'recommendation_author_state',
+      {'favorite_count': count},
+      where: 'username = ?',
+      whereArgs: [username],
+    );
+    if (updated == 0) {
+      await d.insert(
+        'recommendation_author_state',
+        {
+          'username': username,
+          'next_url': null,
+          'complete': 0,
+          'favorite_count': count,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+  }
+
   Future<void> saveRecommendationFavoritePage(
       String username, List<String> trackIds,
       {required String? nextUrl}) async {
-    final d = await db;
-    await d.transaction((txn) async {
-      final batch = txn.batch();
-      for (final trackId in trackIds.toSet()) {
-        batch.insert(
-            'recommendation_author_favorites',
-            {
-              'username': username,
-              'track_id': trackId,
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore);
-      }
-      batch.insert(
-          'recommendation_author_state',
-          {
-            'username': username,
-            'next_url': nextUrl,
-            'complete': nextUrl == null ? 1 : 0,
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace);
-      await batch.commit(noResult: true);
-    });
+    await commitRecommendationFavoritePage(
+      username,
+      trackIds: trackIds,
+      nextUrl: nextUrl,
+    );
   }
 
   Future<void> updateRecommendationAuthorState(String username,
@@ -719,58 +821,53 @@ class LocalDb {
 
   Future<void> addRecommendationFavoriteIds(
       String username, List<String> trackIds) async {
-    final d = await db;
-    final batch = d.batch();
-    for (final trackId in trackIds.toSet()) {
-      batch.insert(
-          'recommendation_author_favorites',
-          {
-            'username': username,
-            'track_id': trackId,
-          },
-          conflictAlgorithm: ConflictAlgorithm.ignore);
-    }
-    await batch.commit(noResult: true);
+    await prependRecommendationFavoriteIds(username, trackIds);
   }
 
   Future<void> mergeRecommendationFavoritePage(
       String username, List<String> trackIds,
       {required String? nextUrl}) async {
-    final d = await db;
-    await d.transaction((txn) async {
-      final batch = txn.batch();
-      for (final trackId in trackIds.toSet()) {
-        batch.insert(
-            'recommendation_author_favorites',
-            {
-              'username': username,
-              'track_id': trackId,
-            },
-            conflictAlgorithm: ConflictAlgorithm.ignore);
-      }
-      batch.insert(
-          'recommendation_author_state',
-          {
-            'username': username,
-            'next_url': nextUrl,
-            'complete': nextUrl == null ? 1 : 0,
-          },
-          conflictAlgorithm: ConflictAlgorithm.replace);
-      await batch.commit(noResult: true);
-    });
+    await commitRecommendationFavoritePage(
+      username,
+      trackIds: trackIds,
+      nextUrl: nextUrl,
+    );
   }
 
   Future<void> commitRecommendationFavoritePage(String username,
-      {required List<String> trackIds, required String? nextUrl}) async {
+      {required List<String> trackIds,
+      required String? nextUrl,
+      int? favoriteCount}) async {
     final d = await db;
     await d.transaction((txn) async {
+      final existing = await txn.query(
+        'recommendation_author_state',
+        columns: ['favorite_count'],
+        where: 'username = ?',
+        whereArgs: [username],
+        limit: 1,
+      );
+      final storedCount =
+          existing.isEmpty ? null : existing.first['favorite_count'] as int?;
+
+      // Pages arrive newest-first. New rows are appended after the current
+      // newest block, so the next page (older favorites) gets a higher rank.
+      final maxRows = await txn.rawQuery(
+        'SELECT MAX(favorite_rank) AS max_rank '
+        'FROM recommendation_author_favorites WHERE username = ?',
+        [username],
+      );
+      var rank = (maxRows.first['max_rank'] as int? ?? 0) + 1;
+
+      final unique = _uniqueIds(trackIds);
       final batch = txn.batch();
-      for (final trackId in trackIds.toSet()) {
+      for (final trackId in unique) {
         batch.insert(
             'recommendation_author_favorites',
             {
               'username': username,
               'track_id': trackId,
+              'favorite_rank': rank++,
             },
             conflictAlgorithm: ConflictAlgorithm.ignore);
       }
@@ -780,10 +877,70 @@ class LocalDb {
             'username': username,
             'next_url': nextUrl,
             'complete': nextUrl == null ? 1 : 0,
+            'favorite_count': favoriteCount ?? storedCount,
           },
           conflictAlgorithm: ConflictAlgorithm.replace);
       await batch.commit(noResult: true);
+      await _trimRecommendationFavorites(txn, username);
     });
+  }
+
+  /// Adds newly discovered favorites ahead of every cached favorite.
+  ///
+  /// [trackIds] must be in page order (newest first). The whole block is
+  /// placed below the current minimum rank, preserving the favorite order.
+  Future<void> prependRecommendationFavoriteIds(
+      String username, List<String> trackIds) async {
+    final unique = _uniqueIds(trackIds);
+    if (unique.isEmpty) return;
+    final d = await db;
+    await d.transaction((txn) async {
+      final minRows = await txn.rawQuery(
+        'SELECT MIN(favorite_rank) AS min_rank '
+        'FROM recommendation_author_favorites WHERE username = ?',
+        [username],
+      );
+      final minRank = minRows.first['min_rank'] as int?;
+      var rank = minRank == null ? 1 : minRank - unique.length;
+      final batch = txn.batch();
+      for (final trackId in unique) {
+        batch.insert(
+            'recommendation_author_favorites',
+            {
+              'username': username,
+              'track_id': trackId,
+              'favorite_rank': rank++,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await batch.commit(noResult: true);
+      await _trimRecommendationFavorites(txn, username);
+    });
+  }
+
+  List<String> _uniqueIds(Iterable<String> ids) {
+    final seen = <String>{};
+    return [
+      for (final id in ids)
+        if (seen.add(id)) id,
+    ];
+  }
+
+  Future<void> _trimRecommendationFavorites(
+      Transaction txn, String username) async {
+    await txn.rawDelete(
+      '''
+      DELETE FROM recommendation_author_favorites
+      WHERE username = ?
+        AND track_id NOT IN (
+          SELECT track_id FROM recommendation_author_favorites
+          WHERE username = ?
+          ORDER BY favorite_rank ASC, track_id ASC
+          LIMIT ?
+        )
+      ''',
+      [username, username, recommendationFavoriteLimit],
+    );
   }
 
   Future<void> resetRecommendationSource(String source) async {
@@ -881,13 +1038,16 @@ class LocalDb {
       await txn.delete('recommendation_author_favorites',
           where: 'username = ?', whereArgs: [username]);
       final batch = txn.batch();
-      for (final trackId in trackIds.toSet()) {
+      var rank = 1;
+      for (final trackId in _uniqueIds(trackIds)) {
         batch.insert('recommendation_author_favorites', {
           'username': username,
           'track_id': trackId,
+          'favorite_rank': rank++,
         });
       }
       await batch.commit(noResult: true);
+      await _trimRecommendationFavorites(txn, username);
     });
   }
 
@@ -1239,6 +1399,36 @@ class LocalDb {
     );
     await d.insert('staged_likes', like.toMap(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// Merge imported likes in one transaction. Existing rows are kept as-is,
+  /// so re-importing the same favorites cannot create duplicates or reorder
+  /// the user's current likes.
+  Future<void> addStagedLikes(Iterable<Track> tracks) async {
+    final items = tracks.toList();
+    if (items.isEmpty) return;
+    final d = await db;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await d.transaction((txn) async {
+      final batch = txn.batch();
+      for (var i = 0; i < items.length; i++) {
+        final track = items[i];
+        final like = StagedLike(
+          trackId: track.id,
+          title: track.title,
+          artist: track.artist,
+          authorUrl: track.authorUrl,
+          iconUrl: track.iconUrl,
+          duration: track.duration,
+          genre: track.genre.isEmpty ? null : track.genre,
+          // Keep the order returned by Newgrounds (newest favorite first).
+          likedAt: now - i,
+        );
+        batch.insert('staged_likes', like.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<void> removeStagedLike(String trackId) async {

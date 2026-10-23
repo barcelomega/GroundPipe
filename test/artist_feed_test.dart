@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -18,7 +17,7 @@ Track song(String id, String artist) => Track(
     );
 
 void main() {
-  test('live Newgrounds artist page and publication date', () async {
+  test('live Newgrounds artist page and timeline', () async {
     final repo = NgRepository();
     final (tracks, next) = await repo.getArtistTracksPage('8-bitek');
     expect(tracks, isNotEmpty);
@@ -29,21 +28,17 @@ void main() {
     final featured = await repo.getFeaturedTracks();
     expect(featured.any((t) => t.genreVerified && t.genre.isNotEmpty), true);
     expect(next, contains('page=2'));
-    await repo.loadPublicationDate(tracks.first);
-    expect(tracks.first.publishedAt, isNotNull);
     final feed = TimelineFeed(
       authors: const [
         Author(username: '8-bitek', name: '8-BiTek'),
         Author(username: 'waterflame', name: 'Waterflame')
       ],
       loadPage: repo.getArtistTracksPage,
-      loadDate: repo.loadPublicationDate,
     );
     final timeline = await feed.take(4);
     expect(timeline, hasLength(4));
     for (var i = 1; i < timeline.length; i++) {
-      expect(timeline[i].publishedAt!.isAfter(timeline[i - 1].publishedAt!),
-          false);
+      expect(int.parse(timeline[i].id) < int.parse(timeline[i - 1].id), true);
     }
   },
       skip: !const bool.fromEnvironment('RUN_NG_LIVE'),
@@ -104,6 +99,37 @@ void main() {
     expect(next, 'https://sampleartist.newgrounds.com/audio?page=2');
   });
 
+  test('artist HTML load-more script advances to the next page', () {
+    final (tracks, next) = NgRepository().parseArtistTracksPage(r'''
+      <!doctype html>
+      <html><body>
+        <div class="audio-wrapper">
+          <a class="item-audiosubmission" href="/audio/listen/789" title="Script track"></a>
+        </div>
+        <li id="22103919_audio_scroll_more" data-playlist-func="load-more">
+          <script>
+            (($) => {
+              //($element, url, tagName, parentSelector, outerId)
+              UsersContentController.loadMore($('#22103919_audio_scroll_more'), "https:\/\/8-bitek.newgrounds.com\/audio?page=2", "li", 'ul.itemlist', '22103919_audio').watch();
+            })(jQuery);
+          </script>
+        </li>
+      </body></html>
+    ''', '8-Bitek');
+
+    expect(tracks, hasLength(1));
+    expect(tracks.single.id, '789');
+    expect(next, 'https://8-bitek.newgrounds.com/audio?page=2');
+  });
+
+  test('artist HTML without a load-more control has no next page', () {
+    final (_, next) = NgRepository().parseArtistTracksPage(
+      '<!doctype html><html><body><ul class="itemlist"></ul></body></html>',
+      '8-Bitek',
+    );
+    expect(next, isNull);
+  });
+
   test('profile avatars prefer the author image and support legacy SVG icons',
       () {
     final repo = NgRepository();
@@ -139,6 +165,37 @@ void main() {
     expect(next, 'https://8-bitek.newgrounds.com/favorites/audio?page=4');
   });
 
+  test('author favorites counter separates exact and rounded values', () {
+    final repo = NgRepository();
+    const header = r'''
+      <nav class="user-header-nav">
+        <div class="user-header-buttons">
+          <a href="/fans" class="user-header-button">
+            <div><span>FANS</span><strong>646</strong></div>
+          </a>
+          <a href="/favorites" class="user-header-button current">
+            <div><span>FAVES</span><strong>$value</strong></div>
+          </a>
+        </div>
+      </nav>
+    ''';
+
+    final tooMany =
+        repo.parseAuthorFavoritesCount(header.replaceFirst(r'$value', '3K'));
+    expect(tooMany.count, isNull);
+    expect(tooMany.isTooMany, isTrue);
+
+    final exact =
+        repo.parseAuthorFavoritesCount(header.replaceFirst(r'$value', '999'));
+    expect(exact.count, 999);
+    expect(exact.isTooMany, isFalse);
+
+    final missing =
+        repo.parseAuthorFavoritesCount('<html><body></body></html>');
+    expect(missing.count, isNull);
+    expect(missing.isUnknown, isTrue);
+  });
+
   test(
       'mobile author listing parses Song - Genre without treating prose as genre',
       () {
@@ -165,95 +222,82 @@ void main() {
     }
   });
 
-  test(
-      'timeline merges author pages by actual date rather than numeric track IDs',
-      () async {
+  test('timeline collects one page per author and sorts by track ID', () async {
+    final pages = <String, List<int>>{};
     final feed = TimelineFeed(
       authors: const [
         Author(username: 'a', name: 'A'),
         Author(username: 'b', name: 'B')
       ],
       loadPage: (artist, {int page = 1}) async {
-        if (artist == 'a' && page == 1) return ([song('1', artist)], 'next');
-        if (artist == 'a') return ([song('3', artist)], null);
-        return ([song('999', artist), song('4', artist)], null);
-      },
-      loadDate: (track) async {
-        final day = {'1': 4, '999': 3, '3': 2, '4': 1}[track.id]!;
-        track.publishedAt = DateTime.utc(2026, 10, day);
+        pages.putIfAbsent(artist, () => []).add(page);
+        if (artist == 'a') return ([song('3', artist)], 'next');
+        return ([song('4', artist), song('2', artist)], null);
       },
     );
-    expect((await feed.take(2)).map((t) => t.id), ['1', '999']);
-    expect((await feed.take(2)).map((t) => t.id), ['3', '4']);
+    expect((await feed.take(2)).map((t) => t.id), ['4', '3']);
+    expect((await feed.take(2)).map((t) => t.id), ['2']);
+    expect(pages, {
+      'a': [1],
+      'b': [1],
+    });
     expect(feed.hasMore, false);
   });
 
-  test('timeline follows the page number supplied by load_more', () async {
+  test('timeline loads only one page per author', () async {
     final requestedPages = <int>[];
     final feed = TimelineFeed(
       authors: const [Author(username: 'a', name: 'A')],
       loadPage: (artist, {int page = 1}) async {
         requestedPages.add(page);
-        if (page == 1) {
-          return ([song('1', artist)], 'https://a.newgrounds.com/audio?page=4');
-        }
-        return ([song('2', artist)], null);
-      },
-      loadDate: (track) async {
-        track.publishedAt = DateTime.utc(2026, 10, track.id == '1' ? 2 : 1);
+        return ([song('1', artist)], 'https://a.newgrounds.com/audio?page=4');
       },
     );
 
-    expect((await feed.take(2)).map((track) => track.id), ['1', '2']);
-    expect(requestedPages, [1, 4]);
+    expect((await feed.take(2)).map((track) => track.id), ['1']);
+    expect(requestedPages, [1]);
     expect(feed.hasMore, false);
   });
 
-  test('timeline feed persists cursors and emitted tracks', () async {
-    final authors = const [Author(username: 'a', name: 'A')];
-    final loader = (String artist, {int page = 1}) async => (
-          [song('$page', artist)],
-          page == 1 ? 'https://a.newgrounds.com/audio?page=2' : null
-        );
-    final dateLoader = (Track track) async {
-      track.publishedAt = DateTime.utc(2026, 10, 3 - int.parse(track.id));
-    };
-    final feed =
-        TimelineFeed(authors: authors, loadPage: loader, loadDate: dateLoader);
-    expect((await feed.take(1)).single.id, '1');
+  test('timeline feed persists pool and emitted tracks', () async {
+    const authors = [Author(username: 'a', name: 'A')];
+    Future<(List<Track>, String?)> loader(String artist,
+            {int page = 1}) async =>
+        ([song('3', artist), song('2', artist), song('1', artist)], null);
+    final feed = TimelineFeed(authors: authors, loadPage: loader);
+    expect((await feed.take(1)).single.id, '3');
 
     final restored = TimelineFeed.fromJson(
       authors: authors,
       loadPage: loader,
-      loadDate: dateLoader,
       json: jsonDecode(jsonEncode(feed.toJson())) as Map<String, dynamic>,
     );
-    expect(restored.emittedTracks.single.id, '1');
-    expect((await restored.take(1)).single.id, '2');
+    expect(restored.emittedTracks.single.id, '3');
+    expect((await restored.take(2)).map((track) => track.id), ['2', '1']);
     expect(restored.isComplete, true);
   });
 
-  test('failed timeline batch can be retried without losing consumed tracks',
-      () async {
+  test('failed author load can be retried', () async {
     var fail = true;
     final feed = TimelineFeed(
-      authors: const [Author(username: 'a', name: 'A')],
-      loadPage: (artist, {int page = 1}) async =>
-          ([song('1', artist), song('2', artist)], null),
-      loadDate: (track) async {
-        if (track.id == '2' && fail) throw Exception('offline');
-        track.publishedAt = DateTime.utc(2026, 10, track.id == '1' ? 2 : 1);
+      authors: const [
+        Author(username: 'a', name: 'A'),
+        Author(username: 'b', name: 'B'),
+      ],
+      loadPage: (artist, {int page = 1}) async {
+        if (artist == 'b' && fail) {
+          fail = false;
+          throw Exception('offline');
+        }
+        return ([song(artist == 'a' ? '2' : '1', artist)], null);
       },
     );
     await expectLater(feed.take(2), throwsException);
-    fail = false;
-    expect((await feed.take(2)).map((t) => t.id), ['1', '2']);
+    expect(feed.emittedTracks, isEmpty);
+    expect((await feed.take(2)).map((t) => t.id), ['2', '1']);
   });
 
-  test('timeline author progress waits for dates and includes empty authors',
-      () async {
-    final dateStarted = Completer<void>();
-    final releaseDate = Completer<void>();
+  test('timeline author progress includes empty authors', () async {
     final progress = <(int, int)>[];
     final feed = TimelineFeed(
       authors: const [
@@ -262,93 +306,88 @@ void main() {
       ],
       loadPage: (artist, {int page = 1}) async =>
           (artist == 'a' ? [song('1', artist)] : <Track>[], null),
-      loadDate: (track) async {
-        dateStarted.complete();
-        await releaseDate.future;
-        track.publishedAt = DateTime.utc(2026, 10, 1);
-      },
       onProgress: (completed, total) => progress.add((completed, total)),
     );
 
-    final pending = feed.take(1);
-    await dateStarted.future;
-    expect(progress, [(1, 2)]);
-    releaseDate.complete();
-    expect(await pending, hasLength(1));
+    expect(await feed.take(1), hasLength(1));
     expect(progress, [(1, 2), (2, 2)]);
   });
 
-  test('timeline reports merging while dates beyond the first head are pending',
-      () async {
-    final secondDateStarted = Completer<void>();
-    final releaseDate = Completer<void>();
+  test('timeline reports merging after the pool is sorted', () async {
     var merging = false;
-    final loadedDates = <String>[];
     final feed = TimelineFeed(
       authors: const [Author(username: 'a', name: 'A')],
       loadPage: (artist, {int page = 1}) async =>
-          ([song('1', artist), song('2', artist), song('3', artist)], null),
-      loadDate: (track) async {
-        loadedDates.add(track.id);
-        if (track.id == '2') {
-          secondDateStarted.complete();
-          await releaseDate.future;
-        }
-        track.publishedAt = DateTime.utc(2026, 10, 4 - int.parse(track.id));
-      },
+          ([song('2', artist), song('1', artist)], null),
       onMerging: () => merging = true,
     );
 
-    final pending = feed.take(2);
-    await secondDateStarted.future;
-    expect(feed.completedAuthors, 1);
+    expect((await feed.take(1)).single.id, '2');
     expect(merging, true);
-    releaseDate.complete();
-    expect((await pending).map((track) => track.id), ['1', '2']);
-    expect(loadedDates, ['1', '2']);
-    expect((await feed.take(1)).single.id, '3');
-    expect(feed.hasMore, false);
   });
 
-  test('timeline does not fetch the next page after filling a batch', () async {
+  test('timeline caps the global pool at 250 and drops the smallest IDs',
+      () async {
     final pages = <int>[];
+    final tracks = [for (var id = 300; id >= 1; id--) song('$id', 'a')];
     final feed = TimelineFeed(
       authors: const [Author(username: 'a', name: 'A')],
       loadPage: (artist, {int page = 1}) async {
         pages.add(page);
-        return ([song('$page', artist)], page == 1 ? '?page=2' : null);
-      },
-      loadDate: (track) async {
-        track.publishedAt = DateTime.utc(2026, 10, 3 - int.parse(track.id));
+        return (tracks, null);
       },
     );
 
-    expect((await feed.take(1)).single.id, '1');
+    final ids = <String>[];
+    ids.addAll((await feed.take(1)).map((track) => track.id));
+    expect(feed.loadedTrackCount, TimelineFeed.candidateLimit);
+    while (feed.hasMore) {
+      ids.addAll((await feed.take(25)).map((track) => track.id));
+    }
     expect(pages, [1]);
-    expect(feed.hasMore, true);
-    expect((await feed.take(1)).single.id, '2');
-    expect(pages, [1, 2]);
-    expect(feed.hasMore, false);
+    expect(ids, hasLength(TimelineFeed.candidateLimit));
+    expect(ids.first, '300');
+    expect(ids.last, '51');
   });
 
-  test('timeline reuses dates of unchanged heads across batches', () async {
-    final dateLoads = <String>[];
+  test('timeline reuses the pool across batches', () async {
+    final pages = <int>[];
     final feed = TimelineFeed(
       authors: const [
         Author(username: 'a', name: 'A'),
         Author(username: 'b', name: 'B'),
       ],
-      loadPage: (artist, {int page = 1}) async =>
-          ([song(artist, artist)], null),
-      loadDate: (track) async {
-        dateLoads.add(track.id);
-        track.publishedAt = DateTime.utc(2026, 10, track.id == 'a' ? 2 : 1);
+      loadPage: (artist, {int page = 1}) async {
+        pages.add(page);
+        return ([song(artist == 'a' ? '2' : '1', artist)], null);
       },
     );
 
-    expect((await feed.take(1)).single.id, 'a');
-    expect((await feed.take(1)).single.id, 'b');
-    expect(dateLoads, ['a', 'b']);
+    expect((await feed.take(1)).single.id, '2');
+    expect((await feed.take(1)).single.id, '1');
+    expect(pages, [1, 1]);
+  });
+
+  test('restored timeline loads only authors missing from the cache', () async {
+    const a = Author(username: 'a', name: 'A');
+    const b = Author(username: 'b', name: 'B');
+    final loadedAuthors = <String>[];
+    Future<(List<Track>, String?)> loader(String artist, {int page = 1}) async {
+      loadedAuthors.add(artist);
+      return ([song(artist == 'a' ? '2' : '1', artist)], null);
+    }
+
+    final feed = TimelineFeed(authors: const [a], loadPage: loader);
+    expect((await feed.take(1)).single.id, '2');
+
+    final restored = TimelineFeed.fromJson(
+      authors: const [a, b],
+      loadPage: loader,
+      json: jsonDecode(jsonEncode(feed.toJson())) as Map<String, dynamic>,
+    );
+    expect(restored.hasMore, true);
+    expect((await restored.take(1)).single.id, '1');
+    expect(loadedAuthors, ['a', 'b']);
   });
 
   test('author keys are stable across names and profile/audio links', () {

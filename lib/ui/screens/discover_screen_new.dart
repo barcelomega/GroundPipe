@@ -415,8 +415,21 @@ class _DiscoverScreenState extends State<DiscoverScreen>
       onRefresh: () async => _search(),
       child: ListView.builder(
         padding: EdgeInsets.zero,
-        itemCount: tracks.length,
+        itemCount: tracks.length + (vm.searchHasMore ? 1 : 0),
         itemBuilder: (context, i) {
+          if (i == tracks.length) {
+            if (vm.isLoadingMoreSearch) {
+              return const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              vm.loadMoreSearch();
+            });
+            return const SizedBox.shrink();
+          }
+
           final track = tracks[i];
           final isBlacklisted = lvm.isBlacklisted(track.id);
           final isLiked = lvm.isStagedLike(track.id);
@@ -835,20 +848,15 @@ class _DiscoverScreenState extends State<DiscoverScreen>
       }
     }
 
-    // Use multi-genre search with parallel requests
-    vm.setMultiGenres(_filterGenres);
-
-    // Set filter parameters
-    vm.setFilters(
-      sort: _filterSort != 'score' ? _filterSort : null,
+    final tabs = [NgTab.featured, NgTab.latest, NgTab.popular];
+    vm.applyDiscoverFilters(
+      genres: _filterGenres,
+      sort: _filterSort,
       artistType: _filterArtistType != 'all' ? _filterArtistType : null,
       after: afterStr,
       before: beforeStr,
+      tab: tabs[_tabController.index],
     );
-
-    // Reload current tab to apply filters
-    final tabs = [NgTab.featured, NgTab.latest, NgTab.popular];
-    vm.reloadTab(tabs[_tabController.index]);
   }
 
   Future<void> _bypassCaptcha(BuildContext context) async {

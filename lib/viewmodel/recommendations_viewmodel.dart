@@ -35,6 +35,14 @@ class RecommendationsViewModel extends ChangeNotifier {
   String? error;
   int _generation = 0;
   bool isLoadingCache = false;
+  bool _isRebuilding = false;
+  bool _isFillingWindow = false;
+  bool _fillWindowQueued = false;
+  static const int _recommendationLimit = 50;
+  static const int _maxFavoritePages = 10;
+
+  String get _currentSource =>
+      selectedPlaylistId == null ? 'likes' : 'playlist_$selectedPlaylistId';
 
   void _onLibraryChanged() {
     availablePlaylists =
@@ -90,8 +98,14 @@ class RecommendationsViewModel extends ChangeNotifier {
         final (nextUrl, complete) =
             await _db.getRecommendationAuthorState(entry.key);
         if (!complete || nextUrl != null) continue;
-        final count =
-            (await _db.getRecommendationFavoriteIds(entry.key)).length;
+        int? count;
+        try {
+          count = await _favoriteCountFor(entry.key);
+        } catch (e) {
+          debugPrint('[recommendations] ${entry.key}: $e');
+          count = null;
+        }
+        if (count == null) continue;
         weights[entry.key] = count == 0 ? 0 : entry.value / math.sqrt(count);
       }
       await _db.removeRecommendationAuthorsAndRebuild(departed, weights,
@@ -135,6 +149,7 @@ class RecommendationsViewModel extends ChangeNotifier {
     } finally {
       isLoadingCache = false;
       notifyListeners();
+      unawaited(_scheduleWindowFill());
     }
   }
 
@@ -176,11 +191,14 @@ class RecommendationsViewModel extends ChangeNotifier {
     }
     if (weights.isEmpty) {
       await _db.rebuildRecommendationScores({}, source: sourceKey);
+      _candidateTracks = [];
       tracks = [];
       isGathering = false;
       completedAuthors = 0;
       totalAuthors = 0;
       notifyListeners();
+      // Drop cached authors/cards that no longer belong to any source.
+      await _rebuild(fetchCards: false);
       return;
     }
 
@@ -209,22 +227,22 @@ class RecommendationsViewModel extends ChangeNotifier {
         notifyListeners();
         try {
           final key = entry.key;
-          var ids = await _db.getRecommendationFavoriteIds(key);
           final (nextUrl, complete) =
               await _db.getRecommendationAuthorState(key);
           if (!complete) {
-            ids = await _gatherAuthorFavorites(entry.key, generation,
+            await _gatherAuthorFavorites(entry.key, generation,
                 nextUrl: nextUrl);
-            if (generation != _generation) return;
-            ids = await _db.getRecommendationFavoriteIds(key);
+          } else {
+            await _checkAuthorForNewFavorites(entry.key, generation);
           }
+          if (generation != _generation) return;
           final (_, finished) = await _db.getRecommendationAuthorState(key);
           if (!finished) {
             // Partial lists are resumable, but must not skew the denominator.
             weights[entry.key] = 0;
           } else {
-            final favoriteCount = ids.length;
-            weights[entry.key] = favoriteCount == 0
+            final favoriteCount = await _favoriteCountFor(entry.key);
+            weights[entry.key] = favoriteCount == null || favoriteCount == 0
                 ? 0
                 : likedByAuthor[entry.key]! / math.sqrt(favoriteCount);
           }
@@ -242,7 +260,8 @@ class RecommendationsViewModel extends ChangeNotifier {
         completedAuthors++;
         notifyListeners();
         if (completedAuthors < totalAuthors) {
-          await Future<void>.delayed(const Duration(seconds: 2));
+          // Keep one second between authors to stay gentle on Newgrounds.
+          await Future<void>.delayed(const Duration(seconds: 1));
         }
       }
       if (generation != _generation) return;
@@ -252,10 +271,15 @@ class RecommendationsViewModel extends ChangeNotifier {
           final (_, complete) =
               await _db.getRecommendationAuthorState(entry.key);
           if (!complete) continue;
-          final favoriteCount =
-              (await _db.getRecommendationFavoriteIds(entry.key)).length;
-          savedWeights[entry.key] =
-              favoriteCount == 0 ? 0 : entry.value / math.sqrt(favoriteCount);
+          int? favoriteCount;
+          try {
+            favoriteCount = await _favoriteCountFor(entry.key);
+          } catch (_) {
+            favoriteCount = null;
+          }
+          savedWeights[entry.key] = favoriteCount == null || favoriteCount == 0
+              ? 0
+              : entry.value / math.sqrt(favoriteCount);
         }
         await _db.rebuildRecommendationScores(savedWeights, source: sourceKey);
       } else {
@@ -268,8 +292,18 @@ class RecommendationsViewModel extends ChangeNotifier {
         currentAuthor = null;
         currentPage = 0;
         notifyListeners();
+        unawaited(_scheduleWindowFill());
       }
     }
+  }
+
+  Future<int?> _favoriteCountFor(String cacheKey) async {
+    final stored = await _db.getRecommendationAuthorFavoriteCount(cacheKey);
+    if (stored != null) return stored;
+    final info = await _repo.getAuthorFavoritesCount(cacheKey.split(':').last);
+    if (info.count == null) return null;
+    await _db.setRecommendationAuthorFavoriteCount(cacheKey, info.count!);
+    return info.count;
   }
 
   Future<List<String>> _gatherAuthorFavorites(String username, int generation,
@@ -281,8 +315,32 @@ class RecommendationsViewModel extends ChangeNotifier {
         ? 1
         : int.tryParse(Uri.tryParse(nextUrl)?.queryParameters['page'] ?? '') ??
             2;
+
+    // Check the FAVES counter before parsing anything. A rounded count such as
+    // "3K" is skipped entirely because it is neither exact nor below the cap.
+    final favorites =
+        await _repo.getAuthorFavoritesCount(username.split(':').last);
+    if (favorites.count == null) return ids;
+    final favoriteCount = favorites.count!;
+    if (favoriteCount == 0) {
+      // An author with no favorites cannot contribute recommendations.
+      await _db.removeRecommendationAuthors([key]);
+      return const [];
+    }
+    await _db.setRecommendationAuthorFavoriteCount(key, favoriteCount);
+
+    if (page > _maxFavoritePages) {
+      await _db.commitRecommendationFavoritePage(
+        key,
+        trackIds: const [],
+        nextUrl: null,
+        favoriteCount: favoriteCount,
+      );
+      return await _db.getRecommendationFavoriteIds(key);
+    }
+
     var next = nextUrl;
-    while (true) {
+    while (page <= _maxFavoritePages) {
       if (generation != _generation) return ids;
       final (pageIds, pageNext) = await _repo.getFavoriteAudioIdsPage(
           username.split(':').last,
@@ -290,95 +348,188 @@ class RecommendationsViewModel extends ChangeNotifier {
           url: next);
       currentPage = page;
       notifyListeners();
-      final newIds = pageIds.where(seen.add).toList();
+      final newIds = <String>[];
+      for (final id in pageIds) {
+        if (seen.add(id)) newIds.add(id);
+      }
       ids.addAll(newIds);
-      await _db.commitRecommendationFavoritePage(key,
-          trackIds: newIds, nextUrl: pageNext);
-      if (pageNext == null) break;
+      final capped = pageNext != null && page == _maxFavoritePages;
+      await _db.commitRecommendationFavoritePage(
+        key,
+        trackIds: newIds,
+        nextUrl: capped ? null : pageNext,
+        favoriteCount: favoriteCount,
+      );
+      if (pageNext == null || capped) break;
       next = pageNext;
       page++;
       // One page at a time, with a conservative pause to avoid stressing NG.
       await Future<void>.delayed(const Duration(seconds: 1));
     }
+    if (ids.isEmpty) {
+      await _db.removeRecommendationAuthors([key]);
+      return const [];
+    }
     return await _db.getRecommendationFavoriteIds(key);
   }
 
+  /// Checks a fully scanned author for favorites added since the last scan.
+  ///
+  /// Favorites are newest-first, so scanning stops at the first already known
+  /// track. The whole page is still inspected, which also handles a re-fave
+  /// that appears above newer tracks. New IDs are inserted ahead of the old
+  /// block, then the cache is trimmed to [LocalDb.recommendationFavoriteLimit].
+  Future<int> _checkAuthorForNewFavorites(String key, int generation) async {
+    final ids = await _db.getRecommendationFavoriteIds(key);
+    final known = {...ids};
+    final newIds = <String>[];
+    var page = 1;
+    String? next;
+    var sawAnyPage = false;
+    var sawAnyId = false;
+
+    while (page <= _maxFavoritePages &&
+        newIds.length < LocalDb.recommendationFavoriteLimit) {
+      if (generation != _generation) return 0;
+      final (pageIds, pageNext) = await _repo
+          .getFavoriteAudioIdsPage(key.split(':').last, page: page, url: next);
+      sawAnyPage = true;
+      if (pageIds.isNotEmpty) sawAnyId = true;
+      currentPage = page;
+      notifyListeners();
+
+      final scan = scanFavoritePage(pageIds, known);
+      newIds.addAll(scan.added);
+      if (newIds.length > LocalDb.recommendationFavoriteLimit) {
+        newIds.removeRange(LocalDb.recommendationFavoriteLimit, newIds.length);
+      }
+      if (scan.reachedOld || pageNext == null || pageIds.isEmpty) break;
+      next = pageNext;
+      page++;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+
+    if (newIds.isEmpty) {
+      if (ids.isEmpty && sawAnyPage && !sawAnyId) {
+        // Complete but empty: drop the tombstone from the cache.
+        await _db.removeRecommendationAuthors([key]);
+      }
+      return 0;
+    }
+
+    await _db.prependRecommendationFavoriteIds(key, newIds);
+    final storedCount = await _db.getRecommendationAuthorFavoriteCount(key);
+    if (storedCount != null) {
+      await _db.setRecommendationAuthorFavoriteCount(
+          key, storedCount + newIds.length);
+    }
+    return newIds.length;
+  }
+
+  /// Adds every new ID from one favorites page to [known].
+  ///
+  /// Returns the new IDs in page order and whether an already cached ID was
+  /// encountered. The rest of the page is still inspected so a re-fave above
+  /// newer tracks does not hide them.
+  @visibleForTesting
+  static ({List<String> added, bool reachedOld}) scanFavoritePage(
+      List<String> pageIds, Set<String> known) {
+    final added = <String>[];
+    var reachedOld = false;
+    for (final id in pageIds) {
+      if (known.contains(id)) {
+        reachedOld = true;
+        continue;
+      }
+      known.add(id);
+      added.add(id);
+    }
+    return (added: added, reachedOld: reachedOld);
+  }
+
   Future<void> _rebuild({bool fetchCards = true}) async {
-    final liked = library.stagedLikes.map((item) => item.trackId).toSet();
-    // The visual-link endpoint accepts at most 25 IDs per request.
-    final source =
-        selectedPlaylistId == null ? 'likes' : 'playlist_$selectedPlaylistId';
-    final rows = await _db.getRecommendationScores(limit: 50, source: source);
-    final usedSources = await _db.getRecommendationSourcesInUse();
-    final ids = rows
-        .map((row) => row['track_id'] as String)
-        .where((id) => !liked.contains(id) && !library.isBlacklisted(id))
-        .toList();
-    final cached = await _db.getRecommendationCards(source);
-    final missing = ids.where((id) => !cached.containsKey(id)).toList();
-    if (fetchCards && missing.isNotEmpty) {
-      final fetched = await _repo.getTrackCardsByIds(missing);
-      final encoded = <String, String>{
-        for (final track in fetched)
-          track.id: jsonEncode(NgRepository.trackToJson(track)),
-      };
-      await _db.saveRecommendationCards(source, encoded);
+    _isRebuilding = true;
+    try {
+      // The visual-link endpoint accepts at most 25 IDs per request.
+      final source =
+          selectedPlaylistId == null ? 'likes' : 'playlist_$selectedPlaylistId';
+      final rows = await _db.getRecommendationScores(
+          limit: _recommendationLimit, source: source);
+      final usedSources = await _db.getRecommendationSourcesInUse();
+      // Keep filtered tracks in the candidate window. They are hidden from
+      // `tracks`, but can return immediately when their Like, playlist entry
+      // or blacklist entry is removed.
+      final ids = rows.map((row) => row['track_id'] as String).toList();
+      final cached = await _db.getRecommendationCards(source);
+      final missing = ids.where((id) => !cached.containsKey(id)).toList();
+      if (fetchCards && missing.isNotEmpty) {
+        final fetched = await _repo.getTrackCardsByIds(missing);
+        final encoded = <String, String>{
+          for (final track in fetched)
+            track.id: jsonEncode(NgRepository.trackToJson(track)),
+        };
+        await _db.saveRecommendationCards(source, encoded);
+        CacheManager.instance.schedulePermanentArtworkSync();
+        cached.addAll(encoded);
+      }
+      final byId = <String, Track>{};
+      for (final id in ids) {
+        final json = cached[id];
+        if (json == null) continue;
+        try {
+          byId[id] = NgRepository.trackFromJson(
+              Map<String, dynamic>.from(jsonDecode(json) as Map));
+        } catch (_) {}
+      }
+      _candidateTracks = ids.map((id) => byId[id]).whereType<Track>().toList();
+      _applyLibraryFilters();
+      await _db.pruneRecommendationCards(
+          source, _candidateTracks.map((t) => t.id).toSet());
+      if (fetchCards) unawaited(_cacheRecommendationArtwork(source, tracks));
+      final usedAuthorKeys = <String>{};
+      final likes = library.stagedLikes.map((like) => like.toTrack()).toList();
+      if (usedSources.contains('likes') || source == 'likes') {
+        for (final track in likes) {
+          final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+          if (author.isNotEmpty && author != 'unknown') {
+            usedAuthorKeys.add(author);
+          }
+        }
+      }
+      final playlists = await _db.getPlaylists();
+      for (final playlist in playlists.where((item) => item.id != null)) {
+        final sourceKey = 'playlist_${playlist.id}';
+        if (!usedSources.contains(sourceKey) && sourceKey != source) continue;
+        final playlistTracks = (await _db.getPlaylistTracks(playlist.id!))
+            .map((item) => item.toTrack());
+        for (final track in playlistTracks) {
+          final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+          if (author.isNotEmpty && author != 'unknown') {
+            usedAuthorKeys.add('$sourceKey:$author');
+          }
+        }
+      }
+      if (selectedPlaylistId != null) {
+        final sourceKey = 'playlist_$selectedPlaylistId';
+        final selectedTracks =
+            (await _db.getPlaylistTracks(selectedPlaylistId!))
+                .map((item) => item.toTrack());
+        for (final track in selectedTracks) {
+          final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
+          if (author.isNotEmpty && author != 'unknown') {
+            usedAuthorKeys.add('$sourceKey:$author');
+          }
+        }
+      }
+      await _db.pruneRecommendationAuthors(usedAuthorKeys);
+      await _db.pruneCardsWithoutRecommendationScores();
+      final currentArtworkIds = await _db.getRecommendationCardTrackIds();
+      currentArtworkIds.addAll(await _db.getRecentRecommendationArtworkIds());
+      await CacheManager.instance.pruneRecommendationIcons(currentArtworkIds);
       CacheManager.instance.schedulePermanentArtworkSync();
-      cached.addAll(encoded);
+    } finally {
+      _isRebuilding = false;
     }
-    final byId = <String, Track>{};
-    for (final id in ids) {
-      final json = cached[id];
-      if (json == null) continue;
-      try {
-        byId[id] = NgRepository.trackFromJson(
-            Map<String, dynamic>.from(jsonDecode(json) as Map));
-      } catch (_) {}
-    }
-    _candidateTracks = ids.map((id) => byId[id]).whereType<Track>().toList();
-    _applyLibraryFilters();
-    await _db.pruneRecommendationCards(source, tracks.map((t) => t.id).toSet());
-    if (fetchCards) unawaited(_cacheRecommendationArtwork(source, tracks));
-    final usedAuthorKeys = <String>{};
-    final likes = library.stagedLikes.map((like) => like.toTrack()).toList();
-    if (usedSources.contains('likes') || source == 'likes') {
-      for (final track in likes) {
-        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
-        if (author.isNotEmpty && author != 'unknown') {
-          usedAuthorKeys.add(author);
-        }
-      }
-    }
-    final playlists = await _db.getPlaylists();
-    for (final playlist in playlists.where((item) => item.id != null)) {
-      final sourceKey = 'playlist_${playlist.id}';
-      if (!usedSources.contains(sourceKey) && sourceKey != source) continue;
-      final playlistTracks = (await _db.getPlaylistTracks(playlist.id!))
-          .map((item) => item.toTrack());
-      for (final track in playlistTracks) {
-        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
-        if (author.isNotEmpty && author != 'unknown') {
-          usedAuthorKeys.add('$sourceKey:$author');
-        }
-      }
-    }
-    if (selectedPlaylistId != null) {
-      final sourceKey = 'playlist_$selectedPlaylistId';
-      final selectedTracks = (await _db.getPlaylistTracks(selectedPlaylistId!))
-          .map((item) => item.toTrack());
-      for (final track in selectedTracks) {
-        final author = Author.key(track.authorUrl ?? track.artistAudioUrl);
-        if (author.isNotEmpty && author != 'unknown') {
-          usedAuthorKeys.add('$sourceKey:$author');
-        }
-      }
-    }
-    await _db.pruneRecommendationAuthors(usedAuthorKeys);
-    await _db.pruneCardsWithoutRecommendationScores();
-    final currentArtworkIds = await _db.getRecommendationCardTrackIds();
-    currentArtworkIds.addAll(await _db.getRecentRecommendationArtworkIds());
-    await CacheManager.instance.pruneRecommendationIcons(currentArtworkIds);
-    CacheManager.instance.schedulePermanentArtworkSync();
   }
 
   Future<void> _cacheRecommendationArtwork(
@@ -408,14 +559,135 @@ class RecommendationsViewModel extends ChangeNotifier {
   }
 
   void _applyLibraryFilters() {
-    final liked = library.stagedLikes.map((item) => item.trackId).toSet();
-    tracks = _candidateTracks
-        .where((track) =>
-            !liked.contains(track.id) &&
-            !library.playlistTrackIds.contains(track.id) &&
-            !library.isBlacklisted(track.id))
-        .toList();
+    final eligible =
+        _candidateTracks.where((track) => !_isFiltered(track.id)).toList();
+    if (eligible.length > _recommendationLimit) {
+      final kept = eligible.take(_recommendationLimit).toList();
+      final trimmed = eligible.skip(_recommendationLimit).toList();
+      final trimmedIds = trimmed.map((track) => track.id).toSet();
+      _candidateTracks.removeWhere((track) => trimmedIds.contains(track.id));
+      tracks = kept;
+      final keepIds = _candidateTracks.map((track) => track.id).toSet();
+      unawaited(_discardTrimmedTracks(trimmed, _currentSource, keepIds));
+    } else {
+      tracks = eligible;
+    }
     notifyListeners();
+    if (tracks.length < _recommendationLimit) {
+      unawaited(_scheduleWindowFill());
+    }
+  }
+
+  bool _isFiltered(String trackId) =>
+      library.isStagedLike(trackId) ||
+      library.playlistTrackIds.contains(trackId) ||
+      library.isBlacklisted(trackId);
+
+  Future<void> _discardTrimmedTracks(
+      List<Track> trimmed, String source, Set<String> keepIds) async {
+    if (trimmed.isEmpty) return;
+    final ids = trimmed.map((track) => track.id).toSet();
+    try {
+      final currentIds = _candidateTracks.map((track) => track.id).toSet();
+      final discarded = ids.difference(currentIds);
+      if (discarded.isEmpty) return;
+      await _db.pruneRecommendationCards(source, {...keepIds, ...currentIds});
+      await CacheManager.instance.removeArtworkForTrackIds(discarded);
+      CacheManager.instance.schedulePermanentArtworkSync();
+    } catch (_) {}
+  }
+
+  Future<void> _scheduleWindowFill() async {
+    if (_isRebuilding || isGathering || isLoadingCache) return;
+    if (_candidateTracks.isEmpty) return;
+    if (tracks.length >= _recommendationLimit) return;
+    if (_isFillingWindow) {
+      _fillWindowQueued = true;
+      return;
+    }
+    _isFillingWindow = true;
+    try {
+      await _fillRecommendationWindow();
+    } catch (e) {
+      debugPrint('[recommendations] fill: $e');
+    } finally {
+      _isFillingWindow = false;
+      if (_fillWindowQueued) {
+        _fillWindowQueued = false;
+        unawaited(_scheduleWindowFill());
+      }
+    }
+  }
+
+  Future<void> _fillRecommendationWindow() async {
+    final source = _currentSource;
+    final known = _candidateTracks.map((track) => track.id).toSet();
+    var offset = 0;
+    const batchSize = 50;
+    while (tracks.length < _recommendationLimit) {
+      if (_isRebuilding ||
+          isGathering ||
+          isLoadingCache ||
+          source != _currentSource) {
+        return;
+      }
+      final rows = await _db.getRecommendationScores(
+          limit: batchSize, offset: offset, source: source);
+      if (rows.isEmpty) break;
+      offset += rows.length;
+
+      final wanted = <String>[];
+      for (final row in rows) {
+        if (tracks.length + wanted.length >= _recommendationLimit) break;
+        final id = row['track_id'] as String;
+        if (known.contains(id) || _isFiltered(id)) continue;
+        wanted.add(id);
+      }
+      if (wanted.isEmpty) {
+        if (rows.length < batchSize) break;
+        continue;
+      }
+
+      final cached = await _db.getRecommendationCards(source);
+      final missing = wanted.where((id) => !cached.containsKey(id)).toList();
+      if (missing.isNotEmpty) {
+        final fetched = await _repo.getTrackCardsByIds(missing);
+        final encoded = <String, String>{
+          for (final track in fetched)
+            if (wanted.contains(track.id))
+              track.id: jsonEncode(NgRepository.trackToJson(track)),
+        };
+        if (encoded.isNotEmpty) {
+          await _db.saveRecommendationCards(source, encoded);
+          cached.addAll(encoded);
+        }
+      }
+
+      var appended = 0;
+      for (final id in wanted) {
+        if (tracks.length >= _recommendationLimit) break;
+        if (_isRebuilding ||
+            isGathering ||
+            isLoadingCache ||
+            source != _currentSource) {
+          return;
+        }
+        if (known.contains(id) || _isFiltered(id)) continue;
+        final json = cached[id];
+        if (json == null) continue;
+        try {
+          final track = NgRepository.trackFromJson(
+              Map<String, dynamic>.from(jsonDecode(json) as Map));
+          _candidateTracks.add(track);
+          tracks.add(track);
+          known.add(id);
+          appended++;
+        } catch (_) {}
+      }
+      if (appended > 0) notifyListeners();
+      if (appended == 0) break;
+      if (rows.length < batchSize) break;
+    }
   }
 
   @override

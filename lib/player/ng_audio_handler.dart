@@ -21,19 +21,20 @@ class NgAudioHandler {
 
   Future<void> Function()? onSkipToNext;
   Future<void> Function()? onSkipToPrevious;
+  Future<void> Function()? onToggleLike;
 
-  final _playingCtrl     = StreamController<bool>.broadcast();
-  final _positionCtrl    = StreamController<Duration>.broadcast();
-  final _durationCtrl    = StreamController<Duration?>.broadcast();
-  final _processingCtrl  = StreamController<NgProcessingState>.broadcast();
+  final _playingCtrl = StreamController<bool>.broadcast();
+  final _positionCtrl = StreamController<Duration>.broadcast();
+  final _durationCtrl = StreamController<Duration?>.broadcast();
+  final _processingCtrl = StreamController<NgProcessingState>.broadcast();
 
   int _epoch = 0;
   int _durationEpoch = 0;
 
-  Stream<bool>               get playingStream      => _playingCtrl.stream;
-  Stream<Duration>           get positionStream     => _positionCtrl.stream;
-  Stream<Duration?>          get durationStream     => _durationCtrl.stream;
-  Stream<NgProcessingState>  get processingStateStream => _processingCtrl.stream;
+  Stream<bool> get playingStream => _playingCtrl.stream;
+  Stream<Duration> get positionStream => _positionCtrl.stream;
+  Stream<Duration?> get durationStream => _durationCtrl.stream;
+  Stream<NgProcessingState> get processingStateStream => _processingCtrl.stream;
 
   StreamSubscription<dynamic>? _eventSub;
 
@@ -43,7 +44,7 @@ class NgAudioHandler {
 
   void _onEvent(dynamic raw) {
     if (raw is! Map) return;
-    final type  = raw['type']  as String?;
+    final type = raw['type'] as String?;
     final value = raw['value'];
     switch (type) {
       case 'playing':
@@ -52,7 +53,9 @@ class NgAudioHandler {
       case 'position':
         final pos = Duration(milliseconds: (value as num).toInt());
         if (pos < Duration.zero) return;
-        if (_duration != null && _duration! > Duration.zero && pos > _duration!) {
+        if (_duration != null &&
+            _duration! > Duration.zero &&
+            pos > _duration!) {
           return;
         }
         _position = pos;
@@ -69,15 +72,16 @@ class NgAudioHandler {
       case 'command':
         if (value == 'next') onSkipToNext?.call();
         if (value == 'prev') onSkipToPrevious?.call();
+        if (value == 'like') onToggleLike?.call();
     }
   }
 
   NgProcessingState _parseState(String s) => switch (s) {
-    'buffering' => NgProcessingState.buffering,
-    'ready'     => NgProcessingState.ready,
-    'ended'     => NgProcessingState.completed,
-    _           => NgProcessingState.idle,
-  };
+        'buffering' => NgProcessingState.buffering,
+        'ready' => NgProcessingState.ready,
+        'ended' => NgProcessingState.completed,
+        _ => NgProcessingState.idle,
+      };
 
   Future<void> playUrl(
     String url, {
@@ -101,12 +105,20 @@ class NgAudioHandler {
     });
   }
 
-  Future<void> play()  => _method.invokeMethod<void>('resume');
+  Future<void> play() => _method.invokeMethod<void>('resume');
   Future<void> pause() => _method.invokeMethod<void>('pause');
-  Future<void> stop()  => _method.invokeMethod<void>('stop');
+  Future<void> stop() => _method.invokeMethod<void>('stop');
 
   Future<void> seek(Duration position) =>
       _method.invokeMethod<void>('seek', {'position': position.inMilliseconds});
+
+  Future<void> setLiked(bool liked) async {
+    try {
+      await _method.invokeMethod<void>('setLiked', {'liked': liked});
+    } catch (_) {
+      // The notification is optional; never break playback over it.
+    }
+  }
 
   Future<void> dispose() async {
     await _eventSub?.cancel();

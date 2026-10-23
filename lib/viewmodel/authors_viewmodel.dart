@@ -3,9 +3,23 @@ import 'package:flutter/foundation.dart';
 import '../data/model/author.dart';
 import '../data/model/track.dart';
 import '../data/repository/local_db.dart';
+import '../data/repository/ng_repository.dart';
+
+class SubscriptionsImportResult {
+  final int found;
+  final int added;
+  final int skipped;
+
+  const SubscriptionsImportResult({
+    required this.found,
+    required this.added,
+    required this.skipped,
+  });
+}
 
 class AuthorsViewModel extends ChangeNotifier {
   final _db = LocalDb.instance;
+  final _repo = NgRepository();
   final _authors = <String, Author>{};
   final _busy = <String>{};
   bool loaded = false;
@@ -71,5 +85,87 @@ class AuthorsViewModel extends ChangeNotifier {
       _busy.remove(author.username);
       notifyListeners();
     }
+  }
+
+  /// Imports the public "Following" list of [username] into subscriptions.
+  ///
+  /// Existing subscriptions, blocked authors and duplicate entries are kept
+  /// intact, so the import can be repeated safely.
+  Future<SubscriptionsImportResult> importSubscriptions(String username) async {
+    final name = Author.key(username.trim());
+    if (name.isEmpty || name.contains('://')) {
+      throw ArgumentError('Enter a Newgrounds username');
+    }
+
+    final found = <String, Author>{};
+    final visitedPages = <String>{};
+    String? nextUrl;
+    var page = 1;
+    while (page <= 20) {
+      final (pageAuthors, pageNext) = await _repo.getFollowingPage(
+        name,
+        page: page,
+        url: nextUrl,
+      );
+      for (final author in pageAuthors) {
+        found.putIfAbsent(author.username, () => author);
+      }
+      if (pageNext == null || !visitedPages.add(pageNext)) break;
+      nextUrl = pageNext;
+      page++;
+      // One page at a time, with a small pause to avoid stressing Newgrounds.
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
+
+    if (found.isEmpty) {
+      return const SubscriptionsImportResult(found: 0, added: 0, skipped: 0);
+    }
+
+    var added = 0;
+    final toSave = <Author>[];
+    for (final author in found.values) {
+      final existing = _authors[author.username];
+      if (existing?.subscribed != true) added++;
+      toSave.add(Author(
+        username: author.username,
+        name: author.name,
+        subscribed: true,
+        blocked: existing?.blocked ?? false,
+      ));
+    }
+
+    await _db.importSubscriptions(toSave);
+    for (final author in toSave) {
+      _authors[author.username] = author;
+    }
+    error = null;
+    revision++;
+    notifyListeners();
+
+    return SubscriptionsImportResult(
+      found: found.length,
+      added: added,
+      skipped: found.length - added,
+    );
+  }
+
+  /// Clears subscriptions while keeping blocked authors blocked.
+  Future<void> clearSubscriptions() async {
+    await _db.clearSubscriptions();
+    final remove = <String>[];
+    for (final entry in _authors.entries.toList()) {
+      final updated = entry.value.copyWith(subscribed: false);
+      if (updated.blocked) {
+        _authors[entry.key] = updated;
+      } else {
+        remove.add(entry.key);
+      }
+    }
+    for (final key in remove) {
+      _authors.remove(key);
+    }
+    error = null;
+    revision++;
+    notifyListeners();
   }
 }

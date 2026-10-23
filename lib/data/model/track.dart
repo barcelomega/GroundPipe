@@ -28,7 +28,6 @@ class Track {
   String? bpm;
 
   String? uploaded;
-  DateTime? publishedAt;
 
   String? fileInfo;
 
@@ -157,7 +156,8 @@ class Track {
     if (!source.contains('aicon.ngfiles.com')) return null;
     // Older submissions only have a plain icon (e.g. /882/882532.png); their
     // medium/cover variants were never generated, so keep the original URL.
-    if (!RegExp(r'_(medium|small|full|cover)\.').hasMatch(source)) return source;
+    if (!RegExp(r'_(medium|small|full|cover)\.').hasMatch(source))
+      return source;
     return source
         .replaceAll('_cover.', '_medium.')
         .replaceAll('_full.', '_medium.')

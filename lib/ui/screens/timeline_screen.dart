@@ -49,6 +49,8 @@ class TimelineScreen extends StatefulWidget {
 }
 
 class _TimelineScreenState extends State<TimelineScreen> {
+  static const _timelineBatchSize = 25;
+
   final _repo = NgRepository();
   late final AuthorsViewModel _authors;
   TimelineFeed? _feed;
@@ -125,15 +127,11 @@ class _TimelineScreenState extends State<TimelineScreen> {
       final feed = TimelineFeed.fromJson(
         authors: authors,
         loadPage: _repo.getArtistTracksPage,
-        loadDate: _repo.loadPublicationDate,
         json: json,
       );
       setState(() {
         _feed = feed;
         _tracks = feed.emittedTracks;
-        _tracks.sort((a, b) =>
-            (b.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
-                a.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
         _totalAuthors = feed.totalAuthors;
         _completedAuthors = feed.completedAuthors;
         _refreshing = false;
@@ -178,7 +176,6 @@ class _TimelineScreenState extends State<TimelineScreen> {
         _feed = TimelineFeed(
           authors: const [],
           loadPage: _repo.getArtistTracksPage,
-          loadDate: _repo.loadPublicationDate,
         );
         _refreshing = false;
         _loading = false;
@@ -206,7 +203,6 @@ class _TimelineScreenState extends State<TimelineScreen> {
       _feed = TimelineFeed(
         authors: authors,
         loadPage: _repo.getArtistTracksPage,
-        loadDate: _repo.loadPublicationDate,
         onProgress: (completed, total) {
           if (!mounted || generation != _generation) return;
           setState(() {
@@ -265,7 +261,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
           );
     };
     try {
-      final tracks = await feed.take(20);
+      final tracks = await feed.take(_timelineBatchSize);
       if (!mounted || generation != _generation) return;
       await _db.saveTimelineCache(
           _authorsFingerprint, jsonEncode(feed.toJson()));
@@ -276,11 +272,9 @@ class _TimelineScreenState extends State<TimelineScreen> {
         } else {
           _tracks.addAll(tracks);
         }
-        _tracks.sort((a, b) =>
-            (b.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)).compareTo(
-                a.publishedAt ?? DateTime.fromMillisecondsSinceEpoch(0)));
         _refreshing = false;
         _loading = false;
+        _assembling = false;
         _currentAuthor = null;
       });
       context.read<TimelineProgress>().update(
@@ -299,6 +293,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
             : 'Could not load the timeline. Please try again.';
         _refreshing = false;
         _loading = false;
+        _assembling = false;
         _tracks = feed.emittedTracks;
         _currentAuthor = null;
       });
@@ -400,7 +395,7 @@ class _TimelineScreenState extends State<TimelineScreen> {
                                     Padding(
                                       padding: const EdgeInsets.only(top: 6),
                                       child: Text(
-                                        'Sorting tracks by publication date...',
+                                        'Sorting tracks...',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall,
@@ -463,138 +458,105 @@ class _TimelineScreenState extends State<TimelineScreen> {
                                                 : 'You are all caught up')));
                                   }
                                   final track = visible[index];
-                                  final date = track.publishedAt!
-                                      .toLocal()
-                                      .toIso8601String()
-                                      .split('T')
-                                      .first;
-                                  final previous = index == 0
-                                      ? null
-                                      : visible[index - 1]
-                                          .publishedAt!
-                                          .toLocal()
-                                          .toIso8601String()
-                                          .split('T')
-                                          .first;
-                                  return Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      if (date != previous)
-                                        Padding(
-                                          padding: EdgeInsets.fromLTRB(
-                                              16, index == 0 ? 4 : 20, 16, 8),
-                                          child: Text(date,
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .titleSmall),
-                                        ),
-                                      Dismissible(
-                                        key: ValueKey('timeline_${track.id}'),
-                                        direction: DismissDirection.horizontal,
-                                        confirmDismiss: (direction) async {
-                                          if (direction ==
-                                              DismissDirection.startToEnd) {
-                                            final wasLiked =
-                                                library.isStagedLike(track.id);
-                                            final removedBySwipe = wasLiked;
-                                            if (wasLiked) {
-                                              await library
-                                                  .removeStagedLike(track.id);
-                                            } else {
-                                              await library
-                                                  .addStagedLike(track);
-                                            }
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(
-                                                SnackBar(
-                                                  content: Text(wasLiked
-                                                      ? 'Removed from Likes'
-                                                      : 'Added to Likes'),
-                                                  action: SnackBarAction(
-                                                    label: 'Undo',
-                                                    onPressed: () {
-                                                      if (removedBySwipe) {
-                                                        library.addStagedLike(
-                                                            track);
-                                                      } else {
-                                                        library
-                                                            .removeStagedLike(
-                                                                track.id);
-                                                      }
-                                                    },
-                                                  ),
-                                                ),
-                                              );
-                                            }
-                                          } else {
-                                            await library.addToBlacklist(track);
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(
-                                                SnackBar(
-                                                  content: Text(
-                                                      'Blocked: ${track.title}'),
-                                                  action: SnackBarAction(
-                                                    label: 'Undo',
-                                                    onPressed: () => library
-                                                        .removeFromBlacklist(
-                                                            track.id),
-                                                  ),
-                                                ),
-                                              );
-                                            }
-                                          }
-                                          return false;
-                                        },
-                                        background: Container(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primaryContainer,
-                                          alignment: Alignment.centerLeft,
-                                          padding:
-                                              const EdgeInsets.only(left: 24),
-                                          child: Icon(
-                                            library.isStagedLike(track.id)
-                                                ? Icons.favorite
-                                                : Icons.favorite_border,
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .onPrimaryContainer,
-                                          ),
-                                        ),
-                                        secondaryBackground: Container(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .errorContainer,
-                                          alignment: Alignment.centerRight,
-                                          padding:
-                                              const EdgeInsets.only(right: 24),
-                                          child: Icon(
-                                            Icons.block,
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .onErrorContainer,
-                                          ),
-                                        ),
-                                        child: TrackListItem(
-                                          track: track,
-                                          isLiked:
-                                              library.isStagedLike(track.id),
-                                          persistentArtwork: true,
-                                          onTap: () {
-                                            final player =
-                                                context.read<NgViewModel>();
-                                            player.setQueueContext(visible);
-                                            player.playTrack(track);
-                                          },
-                                          onLongPress: () =>
-                                              showTrackContextMenu(
-                                                  context, track),
-                                        ),
+                                  return Dismissible(
+                                    key: ValueKey('timeline_${track.id}'),
+                                    direction: DismissDirection.horizontal,
+                                    confirmDismiss: (direction) async {
+                                      if (direction ==
+                                          DismissDirection.startToEnd) {
+                                        final wasLiked =
+                                            library.isStagedLike(track.id);
+                                        final removedBySwipe = wasLiked;
+                                        if (wasLiked) {
+                                          await library
+                                              .removeStagedLike(track.id);
+                                        } else {
+                                          await library.addStagedLike(track);
+                                        }
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(wasLiked
+                                                  ? 'Removed from Likes'
+                                                  : 'Added to Likes'),
+                                              action: SnackBarAction(
+                                                label: 'Undo',
+                                                onPressed: () {
+                                                  if (removedBySwipe) {
+                                                    library
+                                                        .addStagedLike(track);
+                                                  } else {
+                                                    library.removeStagedLike(
+                                                        track.id);
+                                                  }
+                                                },
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      } else {
+                                        await library.addToBlacklist(track);
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                  'Blocked: ${track.title}'),
+                                              action: SnackBarAction(
+                                                label: 'Undo',
+                                                onPressed: () =>
+                                                    library.removeFromBlacklist(
+                                                        track.id),
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                      return false;
+                                    },
+                                    background: Container(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primaryContainer,
+                                      alignment: Alignment.centerLeft,
+                                      padding: const EdgeInsets.only(left: 24),
+                                      child: Icon(
+                                        library.isStagedLike(track.id)
+                                            ? Icons.favorite
+                                            : Icons.favorite_border,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer,
                                       ),
-                                    ],
+                                    ),
+                                    secondaryBackground: Container(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .errorContainer,
+                                      alignment: Alignment.centerRight,
+                                      padding: const EdgeInsets.only(right: 24),
+                                      child: Icon(
+                                        Icons.block,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onErrorContainer,
+                                      ),
+                                    ),
+                                    child: TrackListItem(
+                                      track: track,
+                                      isLiked: library.isStagedLike(track.id),
+                                      persistentArtwork: index <
+                                          LocalDb.timelineArtworkCacheLimit,
+                                      onTap: () {
+                                        final player =
+                                            context.read<NgViewModel>();
+                                        player.setQueueContext(visible);
+                                        player.playTrack(track);
+                                      },
+                                      onLongPress: () =>
+                                          showTrackContextMenu(context, track),
+                                    ),
                                   );
                                 },
                               ),

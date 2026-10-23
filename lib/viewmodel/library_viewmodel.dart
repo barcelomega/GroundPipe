@@ -102,9 +102,107 @@ class LibraryViewModel extends ChangeNotifier {
   }
 
   Future<void> clearStagedLikes() async {
+    final trackIds =
+        (await _db.getStagedLikes()).map((like) => like.trackId).toList();
     await _db.clearStagedLikes();
     _stagedLikeIds.clear();
     await refresh();
+    if (trackIds.isNotEmpty) {
+      try {
+        await _cache.removeArtworkForTrackIds(trackIds);
+      } catch (_) {
+        // The scheduled permanent-artwork sync will prune these files too.
+      }
+    }
+  }
+
+  /// Fetch another user's public audio favorites and merge them into Likes.
+  ///
+  /// Existing likes, blacklisted tracks and duplicate page entries are
+  /// skipped, so the import can be run repeatedly without creating duplicates.
+  Future<LikesImportResult> importLikes(String username) async {
+    final name = username.trim();
+    if (name.isEmpty) {
+      throw ArgumentError('Enter a Newgrounds username');
+    }
+
+    final favorites = await _repo.getAuthorFavoritesCount(name);
+    if (favorites.count == null) {
+      return LikesImportResult(
+        found: 0,
+        added: 0,
+        skipped: 0,
+        tooManyFavorites: favorites.isTooMany,
+        countUnavailable: favorites.isUnknown,
+      );
+    }
+
+    final ids = <String>[];
+    final seen = <String>{};
+    final visitedPages = <String>{};
+    String? nextUrl;
+    var page = 1;
+    while (page <= 10) {
+      final (pageIds, pageNext) = await _repo.getFavoriteAudioIdsPage(
+        name,
+        page: page,
+        url: nextUrl,
+      );
+      for (final id in pageIds) {
+        if (seen.add(id)) ids.add(id);
+      }
+      if (pageNext == null || !visitedPages.add(pageNext)) break;
+      nextUrl = pageNext;
+      page++;
+      // One page at a time, with a small pause to avoid stressing Newgrounds.
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
+
+    final existing = await _db.getStagedLikes();
+    final blacklisted = await _db.getBlacklistedTracks();
+    final alreadyKnown = {
+      ...existing.map((like) => like.trackId),
+      ...blacklisted.map((row) => row['track_id'] as String),
+    };
+    final fresh = ids.where((id) => !alreadyKnown.contains(id)).toList();
+    if (fresh.isEmpty) {
+      return LikesImportResult(
+        found: ids.length,
+        added: 0,
+        skipped: ids.length,
+      );
+    }
+
+    final freshIds = fresh.toSet();
+    final tracksById = <String, Track>{};
+    var failedBatches = 0;
+    for (var start = 0; start < fresh.length; start += 25) {
+      var end = start + 25;
+      if (end > fresh.length) end = fresh.length;
+      try {
+        final cards = await _repo.getTrackCardsByIds(fresh.sublist(start, end));
+        for (final track in cards) {
+          if (freshIds.contains(track.id)) tracksById[track.id] = track;
+        }
+      } catch (_) {
+        failedBatches++;
+      }
+    }
+    if (tracksById.isEmpty && failedBatches > 0) {
+      throw Exception('Could not load the liked tracks');
+    }
+
+    final tracks = tracksById.values.toList();
+    if (tracks.isNotEmpty) {
+      await _db.addStagedLikes(tracks);
+    }
+    await refresh();
+
+    return LikesImportResult(
+      found: ids.length,
+      added: tracks.length,
+      skipped: ids.length - tracks.length,
+    );
   }
 
   // Playlist management
@@ -247,4 +345,21 @@ class LibraryViewModel extends ChangeNotifier {
 
   Future<void> clearCacheToSize(int targetBytes) =>
       _cache.clearCacheToSize(targetBytes);
+}
+
+/// Summary of a Likes import, used by the UI to report the result.
+class LikesImportResult {
+  final int found;
+  final int added;
+  final int skipped;
+  final bool tooManyFavorites;
+  final bool countUnavailable;
+
+  const LikesImportResult({
+    required this.found,
+    required this.added,
+    required this.skipped,
+    this.tooManyFavorites = false,
+    this.countUnavailable = false,
+  });
 }

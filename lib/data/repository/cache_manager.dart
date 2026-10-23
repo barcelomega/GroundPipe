@@ -209,6 +209,39 @@ class CacheManager {
     }
   }
 
+  /// Immediately drop artwork belonging to [trackIds] if they no longer
+  /// belong to a durable source or an offline track. Used after clearing
+  /// Likes so removed covers do not linger in the permanent or per-launch
+  /// stores until the next background sync.
+  Future<void> removeArtworkForTrackIds(Iterable<String> trackIds) async {
+    final ids = trackIds.toSet();
+    if (ids.isEmpty) return;
+    final retained = {
+      ...await _db.getPersistentArtworkTrackIds(),
+      ...await _db.getCachedTrackIds(),
+    };
+    final discarded = ids.where((id) => !retained.contains(id)).toSet();
+    if (discarded.isEmpty) return;
+
+    final dirs = [
+      await getPermanentArtworkDir(),
+      await getTemporaryArtworkDir(),
+      await getCacheDir(),
+    ];
+    for (final id in discarded) {
+      for (final dir in dirs) {
+        for (final suffix in ['icon', 'recommendation_icon', 'art']) {
+          for (final ext in ['webp', 'jpg', 'png']) {
+            final file = File(path.join(dir.path, '${id}_$suffix.$ext'));
+            try {
+              if (await file.exists()) await file.delete();
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  }
+
   Future<bool> _hasArtwork(Directory dir, String trackId) async {
     for (final suffix in ['icon', 'recommendation_icon']) {
       if (await _findArtwork(dir, trackId, suffix) != null) return true;

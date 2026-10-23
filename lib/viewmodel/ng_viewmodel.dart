@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/model/track.dart';
 import '../data/model/ng_user.dart';
@@ -8,8 +9,10 @@ import '../data/model/ng_audio_genres.dart';
 import '../data/repository/ng_repository.dart';
 import '../data/repository/ng_auth.dart';
 import '../data/repository/cache_manager.dart';
+import '../data/repository/multi_genre_feed.dart';
 import '../player/ng_audio_handler.dart';
 import 'authors_viewmodel.dart';
+import 'library_viewmodel.dart';
 
 enum NgTab { featured, latest, popular, topRated }
 
@@ -21,6 +24,7 @@ class TabState {
   int offset = 0;
   bool hasMore = false;
   bool loaded = false;
+  int generation = 0;
 }
 
 class NgViewModel extends ChangeNotifier {
@@ -28,10 +32,14 @@ class NgViewModel extends ChangeNotifier {
   final NgAudioHandler audioHandler;
 
   final AuthorsViewModel? _authors;
+  final LibraryViewModel? _library;
 
-  NgViewModel(this.audioHandler, {AuthorsViewModel? authors})
-      : _authors = authors {
+  NgViewModel(this.audioHandler,
+      {AuthorsViewModel? authors, LibraryViewModel? library})
+      : _authors = authors,
+        _library = library {
     _authors?.addListener(_onAuthorsChanged);
+    _library?.addListener(_onLibraryChanged);
     audioHandler.playingStream.listen((_) => notifyListeners());
     audioHandler.processingStateStream.listen((state) {
       notifyListeners();
@@ -42,6 +50,7 @@ class NgViewModel extends ChangeNotifier {
 
     audioHandler.onSkipToNext = () async => playNext();
     audioHandler.onSkipToPrevious = () async => playPrev();
+    audioHandler.onToggleLike = _toggleCurrentTrackLike;
 
     _tabs[NgTab.featured]!.hasMore = true;
     _tabs[NgTab.latest]!.hasMore = true;
@@ -50,6 +59,7 @@ class NgViewModel extends ChangeNotifier {
 
     loadTab(NgTab.featured);
     _tryLoadUser();
+    _restorePlayerSettings();
   }
 
   void _onAuthorsChanged() {
@@ -59,8 +69,47 @@ class NgViewModel extends ChangeNotifier {
       currentTrack = null;
       isLoadingTrack = false;
       audioHandler.stop();
+      _lastNotificationLiked = false;
+      unawaited(audioHandler.setLiked(false));
     }
     notifyListeners();
+  }
+
+  void _onLibraryChanged() => _syncNotificationLike();
+
+  bool? _lastNotificationLiked;
+
+  void _syncNotificationLike() {
+    final track = currentTrack;
+    final library = _library;
+    if (track == null || library == null) return;
+    final liked = library.isStagedLike(track.id);
+    if (_lastNotificationLiked == liked) return;
+    _lastNotificationLiked = liked;
+    unawaited(audioHandler.setLiked(liked));
+  }
+
+  bool _likeBusy = false;
+
+  Future<void> _toggleCurrentTrackLike() async {
+    final track = currentTrack;
+    final library = _library;
+    if (track == null || library == null || _likeBusy) return;
+    _likeBusy = true;
+    try {
+      if (library.isStagedLike(track.id)) {
+        await library.removeStagedLike(track.id);
+      } else {
+        await library.addStagedLike(track);
+      }
+    } catch (_) {
+      // Leave the notification state unchanged if storage fails.
+      return;
+    } finally {
+      _likeBusy = false;
+    }
+    _syncNotificationLike();
+    if (!_disposed) notifyListeners();
   }
 
   final _tabs = {
@@ -69,6 +118,8 @@ class NgViewModel extends ChangeNotifier {
     NgTab.popular: TabState(),
     NgTab.topRated: TabState(),
   };
+
+  final _genreFeeds = <NgTab, MultiGenreFeed>{};
 
   TabState stateOf(NgTab tab) => _tabs[tab]!;
 
@@ -87,12 +138,15 @@ class NgViewModel extends ChangeNotifier {
 
   List<Track> searchResults = [];
   bool isSearching = false;
+  bool isLoadingMoreSearch = false;
   String? searchError;
   String _lastQuery = '';
   bool _searchHasMore = false;
   int _searchOffset = 0;
+  int _searchGen = 0;
 
   String get lastQuery => _lastQuery;
+  bool get searchHasMore => _searchHasMore;
 
   void setActiveTab(NgTab tab) {
     _activeTab = tab;
@@ -102,14 +156,18 @@ class NgViewModel extends ChangeNotifier {
   void loadTab(NgTab tab) {
     final s = _tabs[tab]!;
     if (s.loaded && s.tracks.isNotEmpty) return;
+    _genreFeeds.remove(tab);
     s.tracks = [];
     s.offset = 0;
     s.error = null;
     s.loaded = false;
     s.isLoading = true;
+    s.isLoadingMore = false;
+    final generation = ++s.generation;
     notifyListeners();
 
-    _fetchForTabWithMultiGenres(tab, 0).then((page) {
+    _fetchForTabPage(tab, 0).then((page) {
+      if (generation != s.generation) return;
       final seen = <String>{};
       s.tracks = page.tracks.where((t) => seen.add(t.id)).toList();
       s.offset = page.nextOffset;
@@ -118,6 +176,7 @@ class NgViewModel extends ChangeNotifier {
       s.loaded = true;
       notifyListeners();
     }).catchError((e) {
+      if (generation != s.generation) return;
       s.error = _errText(e, 'Ошибка загрузки');
       s.isLoading = false;
       notifyListeners();
@@ -131,13 +190,15 @@ class NgViewModel extends ChangeNotifier {
 
   Future<void> loadMoreForTab(NgTab tab) async {
     final s = _tabs[tab]!;
-    if (s.isLoadingMore || !s.hasMore) return;
+    if (s.isLoading || s.isLoadingMore || !s.hasMore) return;
 
     s.isLoadingMore = true;
+    final generation = s.generation;
     notifyListeners();
 
     try {
-      final page = await _fetchForTabWithMultiGenres(tab, s.offset);
+      final page = await _fetchForTabPage(tab, s.offset);
+      if (generation != s.generation) return;
       s.offset = page.nextOffset;
       s.hasMore = page.hasMore;
       final more = page.tracks;
@@ -147,10 +208,13 @@ class NgViewModel extends ChangeNotifier {
         s.tracks = [...s.tracks, ...fresh];
       }
     } catch (e) {
+      if (generation != s.generation) return;
       s.error = _errText(e, 'Ошибка');
     } finally {
-      s.isLoadingMore = false;
-      notifyListeners();
+      if (generation == s.generation) {
+        s.isLoadingMore = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -184,41 +248,51 @@ class NgViewModel extends ChangeNotifier {
     };
   }
 
-  Future<({List<Track> tracks, int nextOffset, bool hasMore})>
-      _fetchForTabWithMultiGenres(NgTab tab, int offset) async {
-    final selectedIds = multiGenres.isNotEmpty
-        ? multiGenres
-        : genre == null
-            ? const <String>{}
-            : <String>{genre!.id};
-    final selectedLabels = NgAudioGenres.groups
-        .expand((group) => group.genres)
-        .where((item) => selectedIds.contains(item.id))
-        .map((item) => item.label.toLowerCase())
-        .toSet();
-
-    var pageOffset = offset;
-    while (true) {
-      // Fetch one globally sorted page, then filter locally to preserve its order.
-      final received = await _fetchForTab(tab, pageOffset);
-      final filtered = selectedLabels.isEmpty
-          ? received
-          : received
-              .where((track) =>
-                  selectedLabels.contains(track.genre.trim().toLowerCase()))
-              .toList();
-      final nextOffset = pageOffset + received.length;
-      final hasMore = received.length >= 30;
-      if (filtered.isNotEmpty || !hasMore) {
-        return (
-          tracks: filtered,
-          nextOffset: nextOffset,
-          hasMore: hasMore,
-        );
-      }
-      // Don't stop pagination just because a server page had no selected genres.
-      pageOffset = nextOffset;
+  Future<({List<Track> tracks, int nextOffset, bool hasMore})> _fetchForTabPage(
+      NgTab tab, int offset) async {
+    final selectedIds = _selectedGenreIds;
+    if (selectedIds.isEmpty) {
+      final received = await _fetchForTab(tab, offset);
+      return (
+        tracks: received,
+        nextOffset: offset + received.length,
+        hasMore: received.isNotEmpty,
+      );
     }
+
+    final feed = _genreFeedFor(tab, selectedIds);
+    final tracks = await feed.take(MultiGenreFeed.pageSize);
+    return (
+      tracks: tracks,
+      nextOffset: 0,
+      hasMore: feed.hasMore,
+    );
+  }
+
+  Set<String> get _selectedGenreIds => multiGenres.isNotEmpty
+      ? multiGenres
+      : genre == null
+          ? const <String>{}
+          : <String>{genre!.id};
+
+  GenreSort get _genreSort => switch (filterSort) {
+        'score' => GenreSort.score,
+        'views' => GenreSort.views,
+        _ => GenreSort.date,
+      };
+
+  MultiGenreFeed _genreFeedFor(NgTab tab, Set<String> selectedIds) {
+    final existing = _genreFeeds[tab];
+    if (existing != null && existing.matches(selectedIds, _genreSort)) {
+      return existing;
+    }
+    final feed = MultiGenreFeed(
+      genres: selectedIds.toList()..sort(),
+      sort: _genreSort,
+      loadPage: (genreId, offset) => _fetchForTab(tab, offset, genre: genreId),
+    );
+    _genreFeeds[tab] = feed;
+    return feed;
   }
 
   NgGenre? genre;
@@ -231,18 +305,12 @@ class NgViewModel extends ChangeNotifier {
   String? filterBefore;
 
   void setGenre(NgGenre? g) {
-    if (genre?.id == g?.id) return;
+    final sameGenre = genre?.id == g?.id;
+    if (sameGenre && (g != null || multiGenres.isEmpty)) return;
     genre = g;
     multiGenres.clear(); // Clear multi-genre when using single genre
     if (g != null) multiGenres.add(g.id);
-
-    for (final s in _tabs.values) {
-      s.tracks = [];
-      s.offset = 0;
-      s.error = null;
-      s.loaded = false;
-      s.hasMore = true;
-    }
+    _resetTabs();
     loadTab(_activeTab);
   }
 
@@ -254,14 +322,7 @@ class NgViewModel extends ChangeNotifier {
       multiGenres = Set.from(genres);
       genre = null; // Clear single genre when using multi
     }
-
-    for (final s in _tabs.values) {
-      s.tracks = [];
-      s.offset = 0;
-      s.error = null;
-      s.loaded = false;
-      s.hasMore = true;
-    }
+    _resetTabs();
     loadTab(_activeTab);
   }
 
@@ -275,72 +336,124 @@ class NgViewModel extends ChangeNotifier {
     filterArtistType = artistType;
     filterAfter = after;
     filterBefore = before;
+    _resetTabs();
+    loadTab(_activeTab);
+  }
 
-    // Reset all tabs
+  /// Applies every Discover filter in one step so the tab is loaded only once.
+  void applyDiscoverFilters({
+    required Set<String> genres,
+    String? sort,
+    String? artistType,
+    String? after,
+    String? before,
+    NgTab? tab,
+  }) {
+    if (genres.isEmpty) {
+      genre = null;
+      multiGenres.clear();
+    } else {
+      multiGenres = Set.from(genres);
+      genre = null;
+    }
+    filterSort = sort;
+    filterArtistType = artistType;
+    filterAfter = after;
+    filterBefore = before;
+    _resetTabs();
+    final target = tab ?? _activeTab;
+    _activeTab = target;
+    loadTab(target);
+  }
+
+  void _resetTabs() {
+    _genreFeeds.clear();
     for (final s in _tabs.values) {
       s.tracks = [];
       s.offset = 0;
       s.error = null;
       s.loaded = false;
       s.hasMore = true;
+      s.isLoading = false;
+      s.isLoadingMore = false;
+      s.generation++;
     }
-    loadTab(_activeTab);
   }
 
   Future<void> search(String query) async {
     final q = query.trim();
     if (q.isEmpty) return;
+    final gen = ++_searchGen;
     _lastQuery = q;
     _searchOffset = 0;
     _searchHasMore = true;
     searchResults = [];
     isSearching = true;
+    isLoadingMoreSearch = false;
     searchError = null;
     notifyListeners();
 
     try {
       if (RegExp(r'^\d{4,8}$').hasMatch(q)) {
         final byId = await _repo.getTrackById(q);
+        if (gen != _searchGen) return;
         searchResults = byId != null ? [byId] : [];
         _searchHasMore = false;
         if (byId == null) {
           searchError = 'No track #$q on Newgrounds.';
         }
       } else {
-        searchResults = await _repo.searchTracks(q, offset: 0);
-        _searchHasMore = searchResults.length >= 24;
+        final found = await _repo.searchTracks(q, offset: 0);
+        if (gen != _searchGen) return;
+        final seen = <String>{};
+        searchResults = found.where((t) => seen.add(t.id)).toList();
+        _searchHasMore = found.isNotEmpty;
       }
     } catch (e) {
-      searchError = _errText(e, 'Ошибка поиска');
+      if (gen == _searchGen) searchError = _errText(e, 'Ошибка поиска');
     } finally {
-      isSearching = false;
-      notifyListeners();
+      if (gen == _searchGen) {
+        isSearching = false;
+        notifyListeners();
+      }
     }
   }
 
   Future<void> loadMoreSearch() async {
-    if (!_searchHasMore || isSearching) return;
-    _searchOffset += 24;
-    isSearching = true;
+    if (!_searchHasMore || isSearching || isLoadingMoreSearch) return;
+    final gen = _searchGen;
+    final query = _lastQuery;
+    final offset = _searchOffset + 24;
+    isLoadingMoreSearch = true;
     notifyListeners();
     try {
-      final more = await _repo.searchTracks(_lastQuery, offset: _searchOffset);
-      if (more.isEmpty) {
-        _searchHasMore = false;
-      } else {
-        searchResults = [...searchResults, ...more];
-      }
+      final more = await _repo.searchTracks(query, offset: offset);
+      if (gen != _searchGen) return;
+      _searchOffset = offset;
+      final seen = searchResults.map((t) => t.id).toSet();
+      final fresh = more.where((t) => seen.add(t.id)).toList();
+      searchResults = [...searchResults, ...fresh];
+      _searchHasMore = more.isNotEmpty && fresh.isNotEmpty;
+    } catch (_) {
+      // Keep the current page visible; stop the sentinel from retrying
+      // in a tight loop until the user refreshes.
+      if (gen == _searchGen) _searchHasMore = false;
     } finally {
-      isSearching = false;
-      notifyListeners();
+      if (gen == _searchGen) {
+        isLoadingMoreSearch = false;
+        notifyListeners();
+      }
     }
   }
 
   void clearSearch() {
+    _searchGen++;
     searchResults = [];
     _lastQuery = '';
     _searchHasMore = false;
+    _searchOffset = 0;
     isSearching = false;
+    isLoadingMoreSearch = false;
     searchError = null;
     notifyListeners();
   }
@@ -393,19 +506,48 @@ class NgViewModel extends ChangeNotifier {
       ? 'Newgrounds лежит: на сайте техработы, приложение ни при чём. Попробуй позже.'
       : '$prefix: $e';
 
+  static const _kPlayerShuffle = 'player_shuffle';
+  static const _kPlayerRepeat = 'player_repeat';
+
   bool _shuffle = false;
   bool get shuffle => _shuffle;
 
   int _repeat = 0;
   int get repeat => _repeat;
 
+  bool _disposed = false;
+
+  Future<void> _restorePlayerSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _shuffle = prefs.getBool(_kPlayerShuffle) ?? _shuffle;
+      final repeat = prefs.getInt(_kPlayerRepeat);
+      if (repeat != null && repeat >= 0 && repeat <= 2) _repeat = repeat;
+      if (!_disposed) notifyListeners();
+    } catch (_) {
+      // Preferences are best-effort; keep the defaults.
+    }
+  }
+
+  Future<void> _persistPlayerSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kPlayerShuffle, _shuffle);
+      await prefs.setInt(_kPlayerRepeat, _repeat);
+    } catch (_) {
+      // Ignore storage failures.
+    }
+  }
+
   void toggleShuffle() {
     _shuffle = !_shuffle;
+    unawaited(_persistPlayerSettings());
     notifyListeners();
   }
 
   void cycleRepeat() {
     _repeat = (_repeat + 1) % 3;
+    unawaited(_persistPlayerSettings());
     notifyListeners();
   }
 
@@ -427,6 +569,7 @@ class NgViewModel extends ChangeNotifier {
     }
     final gen = ++_playGen;
     currentTrack = track;
+    _syncNotificationLike();
     isLoadingTrack = true;
     playError = null;
     _lastCompletedId = null;
@@ -588,7 +731,9 @@ class NgViewModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _authors?.removeListener(_onAuthorsChanged);
+    _library?.removeListener(_onLibraryChanged);
     audioHandler.dispose();
     super.dispose();
   }

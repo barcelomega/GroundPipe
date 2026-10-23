@@ -31,6 +31,21 @@ class NgRateLimitException implements Exception {
   String toString() => 'Newgrounds is temporarily rate-limiting requests';
 }
 
+/// Value of the FAVES counter in a Newgrounds user header.
+///
+/// Newgrounds rounds counts of 1000 and above to a label such as `3K`, so
+/// [count] is only available for authors below that limit. [label] preserves
+/// the original text so callers can tell a rounded count from a missing one.
+class AuthorFavoritesCount {
+  final int? count;
+  final String? label;
+
+  const AuthorFavoritesCount({this.count, this.label});
+
+  bool get isTooMany => label?.toUpperCase().contains('K') ?? false;
+  bool get isUnknown => count == null && !isTooMany;
+}
+
 class NgRepository {
   static const _memoryCacheMaxEntries = 2048;
   static final _authorAvatars = LinkedHashMap<String, Future<String?>>();
@@ -166,7 +181,6 @@ class NgRepository {
         'duration': track.duration,
         'audioType': track.audioType,
         'authorUrl': track.authorUrl,
-        'publishedAt': track.publishedAt?.toIso8601String(),
       };
 
   static Track trackFromJson(Map<String, dynamic> item) => Track(
@@ -179,7 +193,7 @@ class NgRepository {
         duration: item['duration'] as int? ?? 0,
         audioType: item['audioType'] as int? ?? 3,
         authorUrl: item['authorUrl'] as String?,
-      )..publishedAt = DateTime.tryParse(item['publishedAt'] as String? ?? '');
+      );
 
   Future<List<Track>> getCachedTrackRecommendations(String trackId) async {
     final cached = await LocalDb.instance.getTrackRecommendations(trackId);
@@ -277,14 +291,13 @@ class NgRepository {
               sort == null &&
               artistType == null
           ? '$_baseUrl/audio/featured'
-          : '$_baseUrl/audio/featured?'
+          : '$_baseUrl/audio/featured?type=1&interval=all&'
               '${genre != null ? 'genre=$genre&' : ''}'
               '${offset > 0 ? 'offset=$offset&' : ''}'
               '${sort != null ? 'sort=$sort&' : ''}'
               '${artistType != null && artistType != 'all' ? 'artist-type=$artistType&' : ''}'
               '${after != null ? 'after=$after&' : ''}'
-              '${before != null ? 'before=$before&' : ''}'
-              'inner=1');
+              '${before != null ? 'before=$before&' : ''}');
 
   Future<List<Track>> getBrowseTracks({
     int offset = 0,
@@ -362,12 +375,7 @@ class NgRepository {
       final doc = htmlParser.parse(body);
       if (doc.querySelector('html') == null) rethrow;
       final tracks = _parseArtistItems(doc, artist);
-      final nextUrl = doc
-          .querySelector('#load-more[href*="page="], a[href*="page="]')
-          ?.attributes['href'];
-      final next =
-          nextUrl == null ? null : _absoluteArtistPage(artist, nextUrl);
-      return (tracks, next);
+      return (tracks, _artistNextPage(artist, body));
     }
     if (data is! Map || data['errors'] != null || data['items'] is! Map) {
       throw const FormatException('Invalid artist audio response');
@@ -379,51 +387,38 @@ class NgRepository {
         .join('');
     final doc = htmlParser.parse(html);
     final tracks = _parseArtistItems(doc, artist);
-    final loadMore =
-        (data['load_more'] as String? ?? '').replaceAll(r'\/', '/');
-    final next =
-        RegExp(r'https://[^"\s<>]+[?&]page=\d+').firstMatch(loadMore)?.group(0);
-    return (tracks, next);
+    final loadMore = data['load_more'] as String? ?? '';
+    return (tracks, _artistNextPage(artist, loadMore));
   }
 
-  String _absoluteArtistPage(String artist, String url) => Uri.parse(
-        'https://${artist.toLowerCase()}.newgrounds.com/audio',
-      ).resolve(url).toString();
-
-  final _publicationDates = LinkedHashMap<String, DateTime>();
-  final _publicationDateLoads = LinkedHashMap<String, Future<DateTime>>();
-
-  Future<void> loadPublicationDate(Track track) async {
-    if (track.publishedAt != null) return;
-    final cached = _publicationDates[track.id];
-    if (cached != null) {
-      _touchMemoryCache(_publicationDates, track.id);
-      track.publishedAt = cached;
-      return;
+  /// Newgrounds renders the author "load more" control as an AJAX script
+  /// (`UsersContentController.loadMore(..., ".../audio?page=2", ...)`)
+  /// rather than a plain link, so look inside script bodies as well.
+  String? _artistNextPage(String artist, String source) {
+    final text = source.replaceAll(r'\/', '/').replaceAll('&amp;', '&');
+    final patterns = [
+      RegExp(
+        r'''loadMore\(\s*[^,]+,\s*["']([^"']+)["']''',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'''loadMore\(\s*["']([^"']+)["']''',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'''["']([^"']*[?&]page=\d+[^"']*)["']''',
+        caseSensitive: false,
+      ),
+    ];
+    String? candidate;
+    for (final pattern in patterns) {
+      candidate = pattern.firstMatch(text)?.group(1);
+      if (candidate != null) break;
     }
-
-    _touchMemoryCache(_publicationDateLoads, track.id);
-    final pending = _publicationDateLoads.putIfAbsent(track.id, () async {
-      final html = await _connectRaw('$_baseUrl/audio/listen/${track.id}');
-      final date = htmlParser
-          .parse(html)
-          .querySelector('meta[itemprop="datePublished"]')
-          ?.attributes['content'];
-      final publishedAt = DateTime.tryParse(date ?? '');
-      if (publishedAt == null) {
-        throw const FormatException('Publication date is unavailable');
-      }
-      _putMemoryCache(_publicationDates, track.id, publishedAt);
-      return publishedAt;
-    });
-    _putMemoryCache(_publicationDateLoads, track.id, pending);
-    try {
-      track.publishedAt = await pending;
-    } finally {
-      if (identical(_publicationDateLoads[track.id], pending)) {
-        _publicationDateLoads.remove(track.id);
-      }
-    }
+    if (candidate == null) return null;
+    final page = RegExp(r'[?&]page=(\d+)').firstMatch(candidate)?.group(1);
+    if (page == null) return null;
+    return 'https://${artist.toLowerCase()}.newgrounds.com/audio?page=$page';
   }
 
   Future<void> enrichTrack(Track track) async {
@@ -1439,6 +1434,35 @@ class NgRepository {
     return out;
   }
 
+  /// Reads the FAVES counter from a Newgrounds user header.
+  ///
+  /// Returns an unknown value when the counter is missing from the page.
+  AuthorFavoritesCount parseAuthorFavoritesCount(String html) {
+    final doc = htmlParser.parse(html);
+    for (final link in doc.querySelectorAll('.user-header-buttons a')) {
+      final href = link.attributes['href'];
+      if (href == null || Uri.tryParse(href)?.path != '/favorites') continue;
+      final label = link.querySelector('strong')?.text.trim();
+      if (label == null || label.isEmpty) {
+        return const AuthorFavoritesCount();
+      }
+      final normalized = label.replaceAll(',', '').replaceAll(' ', '');
+      final count = RegExp(r'^\d+$').hasMatch(normalized)
+          ? int.tryParse(normalized)
+          : null;
+      return AuthorFavoritesCount(count: count, label: label);
+    }
+    return const AuthorFavoritesCount();
+  }
+
+  /// Fetches the author page and reads the FAVES counter before their
+  /// favorites are parsed.
+  Future<AuthorFavoritesCount> getAuthorFavoritesCount(String username) async {
+    final origin = 'https://${Author.key(username)}.newgrounds.com';
+    final html = await _connectRaw('$origin/favorites/audio');
+    return parseAuthorFavoritesCount(html);
+  }
+
   /// Reads one audio-favorites page and returns only track IDs and next URL.
   (List<String>, String?) parseFavoriteAudioPage(String html) {
     final doc = htmlParser.parse(html);
@@ -1496,6 +1520,94 @@ class NgRepository {
     final (ids, next) = parseFavoriteAudioPage(component);
     return (
       ids,
+      next == null ? null : Uri.parse(target).resolve(next).toString()
+    );
+  }
+
+  /// Parses one page of the author's public "Following" list.
+  ///
+  /// Each entry is a small user card whose name link points at the user's
+  /// subdomain, for example `https://pixiekid66.newgrounds.com`.
+  (List<Author>, String?) parseFollowingPage(String html) {
+    final doc = htmlParser.parse(html);
+    final authors = <Author>[];
+    final seen = <String>{};
+
+    final items = doc.querySelectorAll('.item-user-small');
+    final links = <Element>[];
+    if (items.isEmpty) {
+      links.addAll(doc.querySelectorAll('.item-details h4 a'));
+    } else {
+      for (final item in items) {
+        final link = item.querySelector('.item-details h4 a') ??
+            item.querySelector('.item-details a') ??
+            item.querySelector('.item-icon a') ??
+            item.querySelector('a');
+        if (link != null) links.add(link);
+      }
+    }
+
+    for (final link in links) {
+      final href = link.attributes['href'];
+      if (href == null) continue;
+      final username = Author.key(href);
+      if (username.isEmpty || username.contains('://')) continue;
+      if (!seen.add(username)) continue;
+      final name = _decodeEntities(link.text.trim());
+      authors.add(Author(
+        username: username,
+        name: name.isEmpty ? username : name,
+        subscribed: true,
+      ));
+    }
+
+    return (authors, _followingNextPage(html));
+  }
+
+  String? _followingNextPage(String source) {
+    final text = source.replaceAll(r'\/', '/').replaceAll('&amp;', '&');
+    final patterns = <RegExp>[
+      RegExp(
+        r'''["']([^"']*?/favorites/following[^"']*?[?&]page=\d+[^"']*?)["']''',
+        caseSensitive: false,
+      ),
+      RegExp(
+        r'''href=["']([^"']*?/favorites/following[^"']*?[?&]page=\d+[^"']*?)["']''',
+        caseSensitive: false,
+      ),
+    ];
+    for (final pattern in patterns) {
+      final match = pattern.firstMatch(text);
+      if (match != null) return match.group(1)?.replaceAll('&amp;', '&');
+    }
+    return null;
+  }
+
+  Future<(List<Author>, String?)> getFollowingPage(String username,
+      {int page = 1, String? url}) async {
+    final origin = 'https://${Author.key(username)}.newgrounds.com';
+    final target = url ??
+        (page == 1
+            ? '$origin/favorites/following'
+            : '$origin/favorites/following?page=$page');
+    final response = await _fetch(target);
+    if (response.statusCode != 200) {
+      throw Exception('Could not load subscriptions for $username '
+          '(HTTP ${response.statusCode})');
+    }
+
+    String component = response.body;
+    if (response.headers['content-type']?.contains('application/json') ==
+        true) {
+      final data = jsonDecode(response.body);
+      if (data is! Map || data['component'] is! String) {
+        throw const FormatException('Invalid following response');
+      }
+      component = data['component'] as String;
+    }
+    final (authors, next) = parseFollowingPage(component);
+    return (
+      authors,
       next == null ? null : Uri.parse(target).resolve(next).toString()
     );
   }
@@ -2143,6 +2255,32 @@ class NgRepository {
         }
       }
 
+      // Views sorting needs the listen count from the listing itself.
+      String? listens;
+      final viewsElement = li.querySelector('.detail-views') ??
+          li.querySelector('.views') ??
+          li.querySelector('[class*="views"]');
+      if (viewsElement != null) {
+        final countMatch = RegExp(r'[\d.,]+(?:\s*[KMB])?', caseSensitive: false)
+            .firstMatch(viewsElement.text);
+        if (countMatch != null) {
+          listens = countMatch.group(0)!.replaceAll(RegExp(r'\s+'), '');
+        }
+      }
+      if (listens == null) {
+        final viewsText = li
+                .querySelector('[title*="Listens"], [title*="Views"]')
+                ?.attributes['title'] ??
+            li.text;
+        final viewsMatch = RegExp(
+                r'([\d.,]+(?:\s*[KMB])?)\s*(?:Listens?|Views?|Plays?)',
+                caseSensitive: false)
+            .firstMatch(viewsText);
+        if (viewsMatch != null) {
+          listens = viewsMatch.group(1)!.replaceAll(RegExp(r'\s+'), '');
+        }
+      }
+
       result.add(Track(
         id: id,
         title: title,
@@ -2153,6 +2291,7 @@ class NgRepository {
         duration: duration,
         audioType: audioType,
         score: score,
+        listens: listens,
         authorUrl: authorUrl,
       ));
     }
