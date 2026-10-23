@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/repository/local_db.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../../viewmodel/ng_viewmodel.dart';
 import '../widgets/track_list_item.dart';
@@ -18,7 +19,12 @@ class StagedLikesScreen extends StatefulWidget {
 }
 
 class _StagedLikesScreenState extends State<StagedLikesScreen> {
+  static const int _likesBatchSize = LocalDb.likesPageSize;
+
   bool _importing = false;
+  bool _loadingMoreLikes = false;
+  int _visibleLikes = _likesBatchSize;
+  int _totalLikes = 0;
 
   Future<void> _showImportDialog() async {
     final username = await showDialog<String>(
@@ -87,6 +93,18 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
     );
   }
 
+  void _loadMoreLikes() {
+    if (_loadingMoreLikes || _visibleLikes >= _totalLikes) return;
+    _loadingMoreLikes = true;
+    setState(() {
+      _visibleLikes += _likesBatchSize;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _loadingMoreLikes = false;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final vm = context.watch<NgViewModel>();
@@ -97,6 +115,11 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
     final authors = context.watch<AuthorsViewModel>();
     final likes =
         lvm.stagedLikes.where((l) => !authors.isBlocked(l.toTrack())).toList();
+    _totalLikes = likes.length;
+    final visibleCount =
+        _visibleLikes < likes.length ? _visibleLikes : likes.length;
+    final visibleLikes = likes.take(visibleCount).toList();
+    final hasMore = visibleCount < likes.length;
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
@@ -168,15 +191,24 @@ class _StagedLikesScreenState extends State<StagedLikesScreen> {
               ),
             )
           : ListView.builder(
-              itemCount: likes.length,
+              itemCount: visibleLikes.length + (hasMore ? 1 : 0),
               itemBuilder: (context, index) {
-                final like = likes[index];
+                if (index >= visibleLikes.length) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _loadMoreLikes();
+                  });
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final like = visibleLikes[index];
                 final track = like.toTrack();
 
                 return TrackListItem(
                   track: track,
                   isLiked: true,
-                  persistentArtwork: true,
+                  persistentArtwork: index < LocalDb.likesPageSize,
                   onTap: () {
                     final trackList = likes.map((l) => l.toTrack()).toList();
                     vm.setQueueContext(trackList);

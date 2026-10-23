@@ -12,6 +12,10 @@ class LocalDb {
   /// entries are loaded from the network when the user scrolls further.
   static const int timelineArtworkCacheLimit = 25;
 
+  /// Likes are shown 50 at a time. Only this first page is kept in the
+  /// permanent artwork store; the rest use the normal lazy artwork cache.
+  static const int likesPageSize = 50;
+
   /// Per-author recommendation cache is capped at the newest 500 favorites.
   static const int recommendationFavoriteLimit = 500;
 
@@ -498,8 +502,15 @@ class LocalDb {
   Future<Set<String>> getPersistentArtworkTrackIds() async {
     final d = await db;
     final ids = <String>{};
-    for (final table in [
+    // Only the first page of Likes is durable for artwork purposes.
+    final likeRows = await d.query(
       'staged_likes',
+      columns: ['track_id'],
+      orderBy: 'liked_at DESC',
+      limit: likesPageSize,
+    );
+    ids.addAll(likeRows.map((row) => row['track_id'] as String));
+    for (final table in [
       'playlist_tracks',
       'recommendation_cards',
     ]) {
