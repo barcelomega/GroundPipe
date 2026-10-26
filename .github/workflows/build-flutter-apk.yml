@@ -36,12 +36,6 @@ jobs:
           echo "y" | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "ndk;28.0.12674087"
           echo "y" | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager "cmake;3.22.1"
 
-      - name: Build native library
-        run: |
-          cd android
-          chmod +x build_native.sh
-          ./build_native.sh
-
       - name: Restore release keystore (debug signing if secrets are absent)
         env:
           NGM_KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}

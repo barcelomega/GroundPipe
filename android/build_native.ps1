@@ -1,9 +1,10 @@
 $ErrorActionPreference = "Stop"
 
-# Build native library for Android using NDK CMake
+# Build native library for Android using NDK CMake.
+# Gradle builds this library automatically through externalNativeBuild; this
+# script is only for manually verifying the native build in isolation.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $CppDir = Join-Path $ScriptDir "app\src\main\cpp"
-$JniLibsDir = Join-Path $ScriptDir "app\src\main\jniLibs"
 
 # Find CMake
 $CmakeBin = $null
@@ -87,10 +88,6 @@ foreach ($Abi in $Abis) {
         exit 1
     }
     
-    # Copy to jniLibs
-    $AbiDir = Join-Path $JniLibsDir $Abi
-    New-Item -ItemType Directory -Force -Path $AbiDir | Out-Null
-    Copy-Item (Join-Path $BuildDir "libgroundpipe_native.so") $AbiDir
     Write-Host "Built $Abi" -ForegroundColor Green
 }
 

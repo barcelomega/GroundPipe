@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-# Build native library for Android using NDK CMake
-# This script is used both locally and in GitHub Actions
+# Build native library for Android using NDK CMake.
+# Gradle builds this library automatically through externalNativeBuild; this
+# script is only for manually verifying the native build in isolation.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CPP_DIR="$SCRIPT_DIR/app/src/main/cpp"
-JNILIBS_DIR="$SCRIPT_DIR/app/src/main/jniLibs"
 
 # Find CMake - prefer NDK's CMake, fall back to system CMake
 if [ -n "$ANDROID_SDK_ROOT" ]; then
@@ -80,10 +80,6 @@ for ABI in arm64-v8a armeabi-v7a x86_64 x86; do
         -S "$CPP_DIR"
     
     "$CMAKE_BIN" --build "$BUILD_DIR"
-    
-    # Copy to jniLibs
-    mkdir -p "$JNILIBS_DIR/$ABI"
-    cp "$BUILD_DIR/libgroundpipe_native.so" "$JNILIBS_DIR/$ABI/"
     echo "✓ Built $ABI"
 done
 

@@ -25,7 +25,12 @@ android {
     }
 
     sourceSets {
-        main.java.srcDirs += 'src/main/kotlin'
+        main {
+            java.srcDirs += 'src/main/kotlin'
+            // The native library is built by externalNativeBuild below.
+            // Ignore stale prebuilt copies in src/main/jniLibs.
+            jniLibs.srcDirs = []
+        }
     }
 
     defaultConfig {
