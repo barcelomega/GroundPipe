@@ -143,13 +143,13 @@ class LibraryViewModel extends ChangeNotifier {
     String? nextUrl;
     var page = 1;
     while (page <= 10) {
-      final (pageIds, pageNext) = await _repo.getFavoriteAudioIdsPage(
+      final (pageTracks, pageNext) = await _repo.getFavoriteAudioIdsPage(
         name,
         page: page,
         url: nextUrl,
       );
-      for (final id in pageIds) {
-        if (seen.add(id)) ids.add(id);
+      for (final track in pageTracks) {
+        if (seen.add(track.id)) ids.add(track.id);
       }
       if (pageNext == null || !visitedPages.add(pageNext)) break;
       nextUrl = pageNext;

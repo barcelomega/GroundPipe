@@ -177,4 +177,17 @@ void main() {
     expect(track.artworkUrls[2],
         'https://aicon.ngfiles.com/1572/1572356_full.webp?f1');
   });
+
+  test('peaks URL парсится из NgAudioPlayer JSON', () {
+    final html =
+        File('test/fixtures/listen_1572356.html').readAsStringSync();
+    final track = _legacy();
+
+    NgRepository().parseListenDetails(track, html);
+
+    expect(track.peaksUrl, isNotNull);
+    expect(track.peaksUrl, contains('audio_peaks'));
+    expect(track.peaksUrl, contains('1572356'));
+    expect(track.peaksUrl, contains('.listen.png'));
+  });
 }

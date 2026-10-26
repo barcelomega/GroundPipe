@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:ui' show AppExitResponse;
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'data/repository/cache_manager.dart';
+import 'data/repository/image_cache_manager.dart';
 import 'player/ng_audio_handler.dart';
 import 'ui/screens/discover_screen_new.dart';
 import 'ui/screens/library_screen_new.dart';
@@ -19,6 +21,9 @@ import 'viewmodel/recommendations_viewmodel.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Artist avatars and large covers use a small shared disk cache. Track
+  // icons and the mini player are handled by CacheManager's artwork store.
+  CachedNetworkImageProvider.defaultCacheManager = AppImageCacheManager.instance;
   // Cap Flutter's decoded image cache; metadata LRUs in NgRepository have
   // separate small entry limits.
   PaintingBinding.instance.imageCache.maximumSizeBytes = 384 * 1024 * 1024;

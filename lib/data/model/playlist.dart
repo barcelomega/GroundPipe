@@ -109,6 +109,7 @@ class PlaylistTrack {
         duration: duration,
         audioType: 3, // Default audio type
         genre: genre ?? '',
+        genreVerified: (genre ?? '').isNotEmpty,
         mp3Url: mp3Url,
       );
 }
@@ -205,6 +206,7 @@ class StagedLike {
   final String iconUrl;
   final int duration;
   final String? genre;
+  final String? mp3Url;
   final int likedAt;
 
   const StagedLike({
@@ -216,6 +218,7 @@ class StagedLike {
     required this.iconUrl,
     required this.duration,
     this.genre,
+    this.mp3Url,
     required this.likedAt,
   });
 
@@ -228,6 +231,7 @@ class StagedLike {
         'icon_url': iconUrl,
         'duration': duration,
         'genre': genre,
+        'mp3_url': mp3Url,
         'liked_at': likedAt,
       };
 
@@ -240,6 +244,7 @@ class StagedLike {
         iconUrl: m['icon_url'] as String,
         duration: m['duration'] as int? ?? 0,
         genre: m['genre'] as String?,
+        mp3Url: m['mp3_url'] as String?,
         likedAt: m['liked_at'] as int,
       );
 
@@ -252,6 +257,7 @@ class StagedLike {
         duration: duration,
         audioType: 3, // Default audio type
         genre: genre ?? '',
-        mp3Url: null,
+        genreVerified: (genre ?? '').isNotEmpty,
+        mp3Url: mp3Url,
       );
 }

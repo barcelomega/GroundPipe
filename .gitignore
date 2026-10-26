@@ -72,3 +72,7 @@ android/build/
 android/key.properties
 android/app/*.keystore
 android/app/*.jks
+
+# Native build artifacts (built by build_native scripts)
+android/app/src/main/jniLibs/
+android/app/src/main/cpp/build-*/

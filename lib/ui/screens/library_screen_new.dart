@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../data/model/playlist.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import '../widgets/ng_drawer.dart';
+import '../widgets/track_artwork.dart';
 import 'playlist_screen_new.dart';
 
 class LibraryScreen extends StatelessWidget {
@@ -85,23 +86,18 @@ class LibraryScreen extends StatelessWidget {
                                 color: colorScheme.secondaryContainer,
                                 borderRadius: BorderRadius.circular(8),
                               ),
-                              child: firstTrack != null &&
-                                      firstTrack.aIconUrl.isNotEmpty
-                                  ? ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.network(
-                                        firstTrack.aIconUrl,
-                                        fit: BoxFit.cover,
-                                        errorBuilder: (_, __, ___) => Icon(
-                                          Icons.queue_music,
-                                          color:
-                                              colorScheme.onSecondaryContainer,
-                                        ),
-                                      ),
+                              child: firstTrack != null
+                                  ? TrackArtwork(
+                                      track: firstTrack,
+                                      size: 48,
+                                      radius: 8,
+                                      compact: true,
+                                      persistent: true,
                                     )
                                   : Icon(
                                       Icons.queue_music,
-                                      color: colorScheme.onSecondaryContainer,
+                                      color:
+                                          colorScheme.onSecondaryContainer,
                                     ),
                             ),
                             title: Text(playlist.name),

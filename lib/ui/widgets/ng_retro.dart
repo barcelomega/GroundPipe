@@ -2,7 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../data/model/track.dart';
 import '../theme/ng_theme.dart';
+import 'track_artwork.dart';
 
 
 
@@ -580,6 +582,9 @@ class NgListRow extends StatelessWidget {
 class NgAudioRow extends StatelessWidget {
   final int index;
   final String iconUrl;
+  /// When provided, the icon is resolved through the app's artwork store
+  /// instead of a direct network image.
+  final Track? track;
   final String title;
   final String genre;
   final String artist;
@@ -598,6 +603,7 @@ class NgAudioRow extends StatelessWidget {
     super.key,
     required this.index,
     required this.iconUrl,
+    this.track,
     required this.title,
     required this.genre,
     required this.artist,
@@ -609,6 +615,20 @@ class NgAudioRow extends StatelessWidget {
     this.paused = false,
     this.skin = NgSkin.gold,
   });
+
+  Widget _icon(double size) {
+    final track = this.track;
+    if (track == null) {
+      return NgTrackIcon(url: iconUrl, size: size);
+    }
+    return TrackArtwork(
+      track: track,
+      size: size,
+      compact: true,
+      radius: 0,
+      fallback: Image.asset(NgTex.defaultAudioIcon, fit: BoxFit.cover),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -626,7 +646,7 @@ class NgAudioRow extends StatelessWidget {
                 onTap: onIconTap,
                 child: Stack(
                   children: [
-                    NgTrackIcon(url: iconUrl, size: 39),
+                    _icon(39),
                     if (playing) _PlayOverlay(size: 39, paused: paused),
                   ],
                 ),
@@ -698,7 +718,7 @@ class NgAudioRow extends StatelessWidget {
                 child: Stack(
                   children: [
                     ClipOval(
-                      child: NgTrackIcon(url: iconUrl, size: 60, oval: false),
+                      child: _icon(60),
                     ),
                     if (playing)
                       ClipOval(child: _PlayOverlay(size: 60, paused: paused)),

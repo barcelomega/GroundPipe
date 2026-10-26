@@ -5,6 +5,7 @@ import '../../viewmodel/library_viewmodel.dart';
 import '../screens/authors_screen.dart';
 import '../screens/blacklist_screen.dart';
 import '../screens/cached_tracks_screen.dart';
+import '../screens/settings_screen.dart';
 import '../screens/staged_likes_screen_new.dart';
 
 /// Shared navigation drawer for the three main screens.
@@ -71,23 +72,9 @@ class NgDrawer extends StatelessWidget {
               onTap: () => _open(context, const AuthorsScreen(blocked: true)),
             ),
             ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('About'),
-              onTap: () {
-                final navigator = Navigator.of(context);
-                navigator.pop();
-                showAboutDialog(
-                  context: context,
-                  applicationName: 'GroundPipe',
-                  applicationVersion: '1.2.0+4',
-                  applicationLegalese: 'MIT License',
-                  children: const [
-                    SizedBox(height: 16),
-                    Text('Material Design music player for Newgrounds Audio '
-                        'Portal'),
-                  ],
-                );
-              },
+              leading: const Icon(Icons.settings),
+              title: const Text('Settings'),
+              onTap: () => _open(context, const SettingsScreen()),
             ),
           ],
         ),

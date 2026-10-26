@@ -9,6 +9,8 @@ import '../data/model/ng_audio_genres.dart';
 import '../data/repository/ng_repository.dart';
 import '../data/repository/ng_auth.dart';
 import '../data/repository/cache_manager.dart';
+import '../data/repository/cover_failure_cache.dart';
+import '../data/repository/waveform_cache.dart';
 import '../data/repository/multi_genre_feed.dart';
 import '../player/ng_audio_handler.dart';
 import 'authors_viewmodel.dart';
@@ -508,12 +510,24 @@ class NgViewModel extends ChangeNotifier {
 
   static const _kPlayerShuffle = 'player_shuffle';
   static const _kPlayerRepeat = 'player_repeat';
+  static const _kPlayerSpeed = 'player_speed';
+  static const _kPlayerPitch = 'player_pitch';
+  static const _kPlayerSpeedPitchChained = 'player_speed_pitch_chained';
 
   bool _shuffle = false;
   bool get shuffle => _shuffle;
 
   int _repeat = 0;
   int get repeat => _repeat;
+
+  double _playbackSpeed = 1.0;
+  double get playbackSpeed => _playbackSpeed;
+
+  double _playbackPitch = 0.0;
+  double get playbackPitch => _playbackPitch;
+
+  bool _speedPitchChained = false;
+  bool get speedPitchChained => _speedPitchChained;
 
   bool _disposed = false;
 
@@ -523,6 +537,13 @@ class NgViewModel extends ChangeNotifier {
       _shuffle = prefs.getBool(_kPlayerShuffle) ?? _shuffle;
       final repeat = prefs.getInt(_kPlayerRepeat);
       if (repeat != null && repeat >= 0 && repeat <= 2) _repeat = repeat;
+      _playbackSpeed = (prefs.getDouble(_kPlayerSpeed) ?? 1.0).clamp(0.2, 3.0);
+      _playbackPitch = (prefs.getDouble(_kPlayerPitch) ?? 0.0).clamp(-12.0, 12.0);
+      _speedPitchChained = prefs.getBool(_kPlayerSpeedPitchChained) ?? false;
+      // Push the restored values to the audio engine. Without this the sliders
+      // show the saved speed/pitch but playback keeps the defaults.
+      unawaited(audioHandler.setSpeed(_playbackSpeed));
+      unawaited(audioHandler.setPitch(_playbackPitch));
       if (!_disposed) notifyListeners();
     } catch (_) {
       // Preferences are best-effort; keep the defaults.
@@ -534,6 +555,9 @@ class NgViewModel extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kPlayerShuffle, _shuffle);
       await prefs.setInt(_kPlayerRepeat, _repeat);
+      await prefs.setDouble(_kPlayerSpeed, _playbackSpeed);
+      await prefs.setDouble(_kPlayerPitch, _playbackPitch);
+      await prefs.setBool(_kPlayerSpeedPitchChained, _speedPitchChained);
     } catch (_) {
       // Ignore storage failures.
     }
@@ -547,6 +571,38 @@ class NgViewModel extends ChangeNotifier {
 
   void cycleRepeat() {
     _repeat = (_repeat + 1) % 3;
+    unawaited(_persistPlayerSettings());
+    notifyListeners();
+  }
+
+  void setPlaybackSpeed(double speed) {
+    _playbackSpeed = speed.clamp(0.2, 3.0);
+    if (_speedPitchChained) {
+      _playbackPitch = ((math.log(_playbackSpeed) / math.ln2) * 12).clamp(-12.0, 12.0);
+    }
+    unawaited(audioHandler.setSpeed(_playbackSpeed));
+    if (_speedPitchChained) {
+      unawaited(audioHandler.setPitch(_playbackPitch));
+    }
+    unawaited(_persistPlayerSettings());
+    notifyListeners();
+  }
+
+  void setPlaybackPitch(double semitones) {
+    _playbackPitch = semitones.clamp(-12.0, 12.0);
+    if (_speedPitchChained) {
+      _playbackSpeed = (math.pow(2.0, _playbackPitch / 12) as double).clamp(0.2, 3.0);
+    }
+    unawaited(audioHandler.setPitch(_playbackPitch));
+    if (_speedPitchChained) {
+      unawaited(audioHandler.setSpeed(_playbackSpeed));
+    }
+    unawaited(_persistPlayerSettings());
+    notifyListeners();
+  }
+
+  void toggleSpeedPitchChain() {
+    _speedPitchChained = !_speedPitchChained;
     unawaited(_persistPlayerSettings());
     notifyListeners();
   }
@@ -574,6 +630,13 @@ class NgViewModel extends ChangeNotifier {
     playError = null;
     _lastCompletedId = null;
     notifyListeners();
+
+    // Only the current track's waveform is kept. Drop the previous one as
+    // soon as playback moves on; the new peaks are fetched when the player
+    // actually needs them.
+    WaveformImageCache.instance.keepOnly(track.id);
+    CoverFailureCache.instance.keepOnly(track.id);
+    unawaited(CacheManager.instance.keepOnlyWaveform(track.id));
 
     try {
       await audioHandler.stop();
@@ -619,6 +682,10 @@ class NgViewModel extends ChangeNotifier {
         // Stream from network
         if (track.mp3Url == null || track.mp3Url!.isEmpty) {
           await _repo.enrichTrack(track);
+          // Notify listeners to update UI with enriched data (e.g., peaksUrl)
+          if (gen == _playGen) {
+            notifyListeners();
+          }
         }
         if (gen != _playGen) return;
 

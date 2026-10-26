@@ -82,6 +82,8 @@ class Track {
 
   String? license;
 
+  String? peaksUrl;
+
   Track({
     required this.id,
     required this.title,
@@ -128,6 +130,12 @@ class Track {
 
   List<String> get artworkUrls {
     if (hasLocalIcon) return [iconUrl];
+    return remoteArtworkUrls;
+  }
+
+  /// Remote artwork candidates even when [iconUrl] currently points at a
+  /// cached file. Lets the UI recover from stale cache paths in the database.
+  List<String> get remoteArtworkUrls {
     final out = <String>[];
     final icon = _remoteIconFrom(iconUrl);
     final cover = _remoteCoverFrom(iconUrl);
@@ -148,7 +156,7 @@ class Track {
         if (!out.contains(url)) out.add(url);
       }
     }
-    if (iconUrl.isNotEmpty && !out.contains(iconUrl)) out.add(iconUrl);
+    if (iconUrl.contains('://') && !out.contains(iconUrl)) out.add(iconUrl);
     return out;
   }
 

@@ -21,6 +21,10 @@ class TrackArtwork extends StatefulWidget {
   /// to Likes, playlists, Timeline or recommendations.
   final bool persistent;
 
+  /// Optional placeholder shown while the artwork is unavailable. Retro
+  /// screens pass their own default audio icon.
+  final Widget? fallback;
+
   const TrackArtwork({
     super.key,
     required this.track,
@@ -28,6 +32,7 @@ class TrackArtwork extends StatefulWidget {
     this.radius = 4,
     this.compact = false,
     this.persistent = false,
+    this.fallback,
   });
 
   @override
@@ -40,31 +45,40 @@ class _TrackArtworkState extends State<TrackArtwork> {
   String? _iconUrl;
   String? _coverPath;
   int? _revision;
-  bool _cachingIcon = false;
   String? _initialPath;
 
   @override
   Widget build(BuildContext context) {
     final revision = context.watch<LibraryViewModel>().cacheRevision;
-    if (_trackId != widget.track.id ||
-        _revision != revision ||
-        _iconUrl != widget.track.iconUrl ||
-        _coverPath != widget.track.localCoverPath) {
+    
+    // Track what changed
+    final trackIdChanged = _trackId != widget.track.id;
+    final revisionChanged = _revision != revision;
+    final coverPathChanged = _coverPath != widget.track.localCoverPath;
+    final iconUrlChanged = _iconUrl != widget.track.iconUrl;
+    
+    if (trackIdChanged || revisionChanged || coverPathChanged || iconUrlChanged) {
       _trackId = widget.track.id;
       _revision = revision;
       _iconUrl = widget.track.iconUrl;
       _coverPath = widget.track.localCoverPath;
-      _cachingIcon = false;
-      final known = _knownLocalPath();
-      _initialPath = known;
-      _localArtwork =
-          known != null ? Future.value(known) : _resolveLocalArtwork();
+      
+      // Only recreate the future if something other than iconUrl changed.
+      // If only iconUrl changed, _FallbackArtwork will pick it up automatically
+      // from widget.track without flashing a placeholder.
+      if (trackIdChanged || revisionChanged || coverPathChanged) {
+        final known = _knownLocalPath();
+        _initialPath = known;
+        _localArtwork =
+            known != null ? Future.value(known) : _resolveLocalArtwork();
+      }
     }
     final colors = Theme.of(context).colorScheme;
-    final fallback = Icon(
-      Icons.music_note,
-      color: colors.onSurfaceVariant,
-    );
+    final fallback = widget.fallback ??
+        Icon(
+          Icons.music_note,
+          color: colors.onSurfaceVariant,
+        );
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(widget.radius),
@@ -76,9 +90,19 @@ class _TrackArtworkState extends State<TrackArtwork> {
           builder: (context, snapshot) {
             final path = snapshot.data;
             if (path != null) {
+              final dpr =
+                  MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
               return Image.file(
                 File(path),
                 fit: BoxFit.cover,
+                cacheWidth: (widget.size * dpr).round(),
+                frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                  if (wasSynchronouslyLoaded || frame != null) return child;
+                  return ColoredBox(
+                    color: colors.surfaceContainerHighest,
+                    child: fallback,
+                  );
+                },
                 errorBuilder: (_, __, ___) => fallback,
               );
             }
@@ -88,20 +112,23 @@ class _TrackArtworkState extends State<TrackArtwork> {
                 child: fallback,
               );
             }
+            if (widget.compact) {
+              // Icons live only in CacheManager's artwork store; never let
+              // the generic network-image cache own them.
+              return fallback;
+            }
             final urls = <String>{
-              if (widget.compact)
-                widget.track.aIconUrl
-              else
-                widget.track.coverUrl,
+              widget.track.coverUrl,
               ...widget.track.artworkUrls,
               widget.track.remoteIconUrl,
+              if (widget.track.hasLocalIcon)
+                ...widget.track.remoteArtworkUrls,
             }.where((url) => url.contains('://')).toList();
             if (urls.isEmpty) return fallback;
             return _FallbackArtwork(
               urls: urls,
               fallback: fallback,
               placeholderColor: colors.surfaceContainerHighest,
-              onImageLoaded: widget.compact ? _cacheLoadedIcon : null,
             );
           },
         ),
@@ -147,36 +174,17 @@ class _TrackArtworkState extends State<TrackArtwork> {
       if (cover != null && cover.isNotEmpty && await File(cover).exists()) {
         return cover;
       }
-      return CacheManager.instance.getCachedArtworkPath(track.id);
+      return CacheManager.instance.resolveTrackIcon(
+        track,
+        persistent: widget.persistent ||
+            CacheManager.instance.isPersistentArtworkTrack(track.id),
+      );
     }
     final cover = track.localCoverPath;
     if (cover != null && cover.isNotEmpty && await File(cover).exists()) {
       return cover;
     }
     return CacheManager.instance.getCachedArtworkPath(track.id);
-  }
-
-  Future<void> _cacheLoadedIcon() async {
-    if (_cachingIcon) return;
-    _cachingIcon = true;
-    try {
-      final cache = CacheManager.instance;
-      final usePermanent =
-          widget.persistent || cache.isPersistentArtworkTrack(widget.track.id);
-      final path = usePermanent
-          ? await cache.cachePermanentTrackIcon(widget.track)
-          : await cache.cacheTemporaryTrackIcon(widget.track);
-      if (mounted && path != null) {
-        setState(() {
-          _initialPath = path;
-          _localArtwork = Future.value(path);
-        });
-      }
-    } catch (_) {
-      // Artwork remains usable from the network image cache if disk caching fails.
-    } finally {
-      _cachingIcon = false;
-    }
   }
 }
 
@@ -187,13 +195,11 @@ class _FallbackArtwork extends StatefulWidget {
   final List<String> urls;
   final Widget fallback;
   final Color placeholderColor;
-  final VoidCallback? onImageLoaded;
 
   const _FallbackArtwork({
     required this.urls,
     required this.fallback,
     required this.placeholderColor,
-    this.onImageLoaded,
   });
 
   @override
@@ -202,13 +208,16 @@ class _FallbackArtwork extends StatefulWidget {
 
 class _FallbackArtworkState extends State<_FallbackArtwork> {
   int _index = 0;
+  bool _loaded = false;
 
   @override
   void didUpdateWidget(covariant _FallbackArtwork oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.urls.isEmpty ||
-        widget.urls.isEmpty ||
-        oldWidget.urls.first != widget.urls.first) {
+    // Only reset if we haven't loaded anything yet and the URL list changed
+    if (!_loaded &&
+        (oldWidget.urls.isEmpty ||
+            widget.urls.isEmpty ||
+            oldWidget.urls.first != widget.urls.first)) {
       _index = 0;
     }
   }
@@ -227,7 +236,7 @@ class _FallbackArtworkState extends State<_FallbackArtwork> {
       imageUrl: widget.urls[_index],
       fit: BoxFit.cover,
       imageBuilder: (context, imageProvider) {
-        widget.onImageLoaded?.call();
+        _loaded = true;
         return Image(image: imageProvider, fit: BoxFit.cover);
       },
       placeholder: (_, __) => ColoredBox(

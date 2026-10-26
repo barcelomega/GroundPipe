@@ -201,5 +201,6 @@ class TimelineFeed {
         duration: json['duration'] as int,
         audioType: json['audioType'] as int,
         genre: json['genre'] as String? ?? '',
+        genreVerified: (json['genre'] as String? ?? '').isNotEmpty,
       );
 }

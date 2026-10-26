@@ -40,6 +40,7 @@ class _ArtistTrackRowState extends State<ArtistTrackRow> {
       index: widget.index,
       skin: widget.skin,
       iconUrl: t.aIconUrl,
+      track: t,
       title: t.title,
       genre: t.genre,
       artist: '',

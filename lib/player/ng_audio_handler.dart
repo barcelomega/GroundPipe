@@ -120,6 +120,22 @@ class NgAudioHandler {
     }
   }
 
+  Future<void> setSpeed(double speed) async {
+    try {
+      await _method.invokeMethod<void>('setSpeed', {'speed': speed});
+    } catch (_) {
+      // Speed changes are best-effort; keep playback running.
+    }
+  }
+
+  Future<void> setPitch(double semitones) async {
+    try {
+      await _method.invokeMethod<void>('setPitch', {'pitch': semitones});
+    } catch (_) {
+      // Pitch changes are best-effort; keep playback running.
+    }
+  }
+
   Future<void> dispose() async {
     await _eventSub?.cancel();
     _playingCtrl.close();

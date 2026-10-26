@@ -34,7 +34,7 @@ class LocalDb {
     final path = join(await getDatabasesPath(), 'ngmusic.db');
     return openDatabase(
       path,
-      version: 20,
+      version: 21,
       onUpgrade: (db, from, to) async {
         if (from < 2) {
           await db.execute('''
@@ -211,6 +211,13 @@ class LocalDb {
             'SET favorite_rank = rowid WHERE favorite_rank = 0',
           );
         }
+        if (from < 21) {
+          // Add mp3_url column to staged_likes for consistency with playlist_tracks
+          final columns = await db.rawQuery('PRAGMA table_info(staged_likes)');
+          if (!columns.any((row) => row['name'] == 'mp3_url')) {
+            await db.execute('ALTER TABLE staged_likes ADD COLUMN mp3_url TEXT');
+          }
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -271,6 +278,7 @@ class LocalDb {
             icon_url TEXT NOT NULL,
             duration INTEGER DEFAULT 0,
             genre TEXT,
+            mp3_url TEXT,
             liked_at INTEGER NOT NULL
           )
         ''');
@@ -746,6 +754,50 @@ class LocalDb {
     final d = await db;
     await d.transaction((txn) async {
       await txn.update('author_preferences', {'subscribed': 0});
+      await txn.delete(
+        'author_preferences',
+        where: 'subscribed = 0 AND blocked = 0',
+      );
+    });
+  }
+
+  /// Blocks imported authors without dropping their subscribed flag.
+  Future<void> importBlockedAuthors(List<Author> authors) async {
+    if (authors.isEmpty) return;
+    final d = await db;
+    await d.transaction((txn) async {
+      for (final author in authors) {
+        final existing = await txn.query(
+          'author_preferences',
+          columns: ['username'],
+          where: 'username = ?',
+          whereArgs: [author.username],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          await txn.insert('author_preferences', {
+            'username': author.username,
+            'name': author.name,
+            'subscribed': 0,
+            'blocked': 1,
+          });
+        } else {
+          await txn.update(
+            'author_preferences',
+            {'name': author.name, 'blocked': 1},
+            where: 'username = ?',
+            whereArgs: [author.username],
+          );
+        }
+      }
+    });
+  }
+
+  /// Removes every blocked author while keeping subscribed authors subscribed.
+  Future<void> clearBlockedAuthors() async {
+    final d = await db;
+    await d.transaction((txn) async {
+      await txn.update('author_preferences', {'blocked': 0});
       await txn.delete(
         'author_preferences',
         where: 'subscribed = 0 AND blocked = 0',
@@ -1323,6 +1375,7 @@ class LocalDb {
         title: pt.title,
         artist: pt.artist,
         genre: pt.genre ?? '',
+        genreVerified: (pt.genre ?? '').isNotEmpty,
         iconUrl: pt.iconUrl,
         duration: pt.duration,
         audioType: 3,
@@ -1334,6 +1387,7 @@ class LocalDb {
         title: f.title,
         artist: f.artist,
         genre: f.genre ?? '',
+        genreVerified: (f.genre ?? '').isNotEmpty,
         iconUrl: f.iconUrl,
         duration: f.duration,
         audioType: 3,
@@ -1403,9 +1457,11 @@ class LocalDb {
       trackId: track.id,
       title: track.title,
       artist: track.artist,
+      authorUrl: track.authorUrl,
       iconUrl: track.iconUrl,
       duration: track.duration,
       genre: track.genre.isEmpty ? null : track.genre,
+      mp3Url: track.mp3Url,
       likedAt: DateTime.now().millisecondsSinceEpoch,
     );
     await d.insert('staged_likes', like.toMap(),
@@ -1432,6 +1488,7 @@ class LocalDb {
           iconUrl: track.iconUrl,
           duration: track.duration,
           genre: track.genre.isEmpty ? null : track.genre,
+          mp3Url: track.mp3Url,
           // Keep the order returned by Newgrounds (newest favorite first).
           likedAt: now - i,
         );
@@ -1457,6 +1514,7 @@ class LocalDb {
         title: sl.title,
         artist: sl.artist,
         genre: sl.genre ?? '',
+        genreVerified: (sl.genre ?? '').isNotEmpty,
         iconUrl: sl.iconUrl,
         duration: sl.duration,
         audioType: 3,

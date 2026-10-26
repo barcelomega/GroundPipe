@@ -11,10 +11,12 @@ import '../../data/model/track.dart';
 import '../../data/repository/ng_repository.dart';
 import '../../data/repository/local_db.dart';
 import '../../data/repository/cache_manager.dart';
+import '../../data/repository/cover_failure_cache.dart';
 import 'artist_screen.dart';
 import '../widgets/cache_pin_button.dart';
 import '../widgets/track_artwork.dart';
 import '../widgets/track_context_menu.dart';
+import '../widgets/waveform_progress.dart';
 
 class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
@@ -156,7 +158,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final localArtwork = track.localCoverPath;
 
     return Scaffold(
       backgroundColor: colorScheme.surface,
@@ -260,50 +261,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(16),
-                            child: localArtwork != null
-                                ? Image.file(
-                                    File(localArtwork),
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Center(
-                                      child: Icon(
-                                        Icons.music_note,
-                                        size: 96,
-                                        color: colorScheme.onSurfaceVariant,
-                                      ),
-                                    ),
-                                  )
-                                : track.iconUrl.isNotEmpty
-                                    ? CachedNetworkImage(
-                                        imageUrl: track.coverUrl,
-                                        fit: BoxFit.cover,
-                                        placeholder: (_, __) => Center(
-                                          child: Icon(
-                                            Icons.music_note,
-                                            size: 96,
-                                            color: colorScheme.onSurfaceVariant,
-                                          ),
-                                        ),
-                                        errorWidget: (_, __, ___) =>
-                                            CachedNetworkImage(
-                                          imageUrl: track.remoteIconUrl,
-                                          fit: BoxFit.cover,
-                                          errorWidget: (_, __, ___) => Center(
-                                            child: Icon(
-                                              Icons.music_note,
-                                              size: 96,
-                                              color:
-                                                  colorScheme.onSurfaceVariant,
-                                            ),
-                                          ),
-                                        ),
-                                      )
-                                    : Center(
-                                        child: Icon(
-                                          Icons.music_note,
-                                          size: 96,
-                                          color: colorScheme.onSurfaceVariant,
-                                        ),
-                                      ),
+                            child: _PlayerCover(track: track),
                           ),
                         ),
                       ),
@@ -377,27 +335,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                       const SizedBox(height: 24),
 
-                      // Progress bar
+                      // Waveform progress bar
                       Column(
                         children: [
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 4,
-                              thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 6,
-                              ),
-                              overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 16,
-                              ),
-                            ),
-                            child: Slider(
-                              value: vm.duration != null &&
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 24),
+                            child: WaveformProgress(
+                              track: track,
+                              progress: vm.duration != null &&
                                       vm.duration!.inMilliseconds > 0
                                   ? (vm.position.inMilliseconds /
                                           vm.duration!.inMilliseconds)
                                       .clamp(0.0, 1.0)
                                   : 0.0,
-                              onChanged: (value) {
+                              onSeek: (value) {
                                 if (vm.duration != null) {
                                   final pos = Duration(
                                     milliseconds:
@@ -409,6 +360,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               },
                             ),
                           ),
+                          const SizedBox(height: 8),
                           Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 24),
                             child: Row(
@@ -496,6 +448,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                       const SizedBox(height: 32),
 
+                      // Speed and Pitch Controls
+                      _buildSpeedPitchControls(context),
+
+                      const SizedBox(height: 24),
+
                       // Queue
                       _buildRecommendations(context),
                     ],
@@ -581,5 +538,186 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (track == null) return;
 
     showTrackContextMenu(context, track);
+  }
+
+  Widget _buildSpeedPitchControls(BuildContext context) {
+    final vm = context.watch<NgViewModel>();
+    final colorScheme = Theme.of(context).colorScheme;
+    
+    return ExpansionTile(
+      dense: true,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      leading: Icon(Icons.tune, color: colorScheme.onSurfaceVariant, size: 20),
+      title: Text(
+        'Playback Options',
+        style: TextStyle(fontSize: 14, color: colorScheme.onSurfaceVariant),
+      ),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Speed', style: TextStyle(fontSize: 13, color: colorScheme.onSurface)),
+                      Text('${vm.playbackSpeed.toStringAsFixed(2)}×', style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant)),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      IconButton(
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                        icon: Icon(Icons.remove, color: colorScheme.onSurfaceVariant),
+                        onPressed: () => vm.setPlaybackSpeed(vm.playbackSpeed - 0.05),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: vm.playbackSpeed,
+                          min: 0.2,
+                          max: 3.0,
+                          divisions: 56,
+                          onChanged: vm.setPlaybackSpeed,
+                        ),
+                      ),
+                      IconButton(
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                        icon: Icon(Icons.add, color: colorScheme.onSurfaceVariant),
+                        onPressed: () => vm.setPlaybackSpeed(vm.playbackSpeed + 0.05),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Pitch', style: TextStyle(fontSize: 13, color: colorScheme.onSurface)),
+                      Text('${vm.playbackPitch >= 0 ? '+' : ''}${vm.playbackPitch.toStringAsFixed(1)} st', style: TextStyle(fontSize: 13, color: colorScheme.onSurfaceVariant)),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      IconButton(
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                        icon: Icon(Icons.remove, color: colorScheme.onSurfaceVariant),
+                        onPressed: () => vm.setPlaybackPitch(vm.playbackPitch - 1),
+                      ),
+                      Expanded(
+                        child: Slider(
+                          value: vm.playbackPitch,
+                          min: -12.0,
+                          max: 12.0,
+                          divisions: 24,
+                          onChanged: vm.setPlaybackPitch,
+                        ),
+                      ),
+                      IconButton(
+                        iconSize: 18,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints(minWidth: 32, minHeight: 32),
+                        icon: Icon(Icons.add, color: colorScheme.onSurfaceVariant),
+                        onPressed: () => vm.setPlaybackPitch(vm.playbackPitch + 1),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              children: [
+                IconButton(
+                  icon: Icon(
+                    vm.speedPitchChained ? Icons.link : Icons.link_off,
+                    color: vm.speedPitchChained ? colorScheme.primary : colorScheme.onSurfaceVariant,
+                  ),
+                  onPressed: vm.toggleSpeedPitchChain,
+                  tooltip: 'Chain speed and pitch',
+                ),
+                IconButton(
+                  icon: Icon(
+                    Icons.restart_alt,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  onPressed: () {
+                    vm.setPlaybackSpeed(1.0);
+                    vm.setPlaybackPitch(0.0);
+                  },
+                  tooltip: 'Reset to defaults',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Large player cover. The fallback is kept underneath the network image, so
+/// a failed probe never swaps one fallback for the same fallback and blinks.
+/// Failures are remembered for the current track, so reopening the player
+/// does not retry a cover that is already known to be missing.
+class _PlayerCover extends StatelessWidget {
+  const _PlayerCover({required this.track});
+
+  final Track track;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final fallback = Center(
+      child: Icon(
+        Icons.music_note,
+        size: 96,
+        color: colors.onSurfaceVariant,
+      ),
+    );
+
+    final local = track.localCoverPath;
+    if (local != null && local.isNotEmpty) {
+      return Image.file(
+        File(local),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => fallback,
+      );
+    }
+
+    if (track.iconUrl.isEmpty) return fallback;
+
+    final url = track.coverUrl;
+    if (CoverFailureCache.instance.failed(track.id, url)) {
+      return fallback;
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        fallback,
+        Image(
+          image: CachedNetworkImageProvider(url),
+          fit: BoxFit.cover,
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            if (wasSynchronouslyLoaded || frame != null) return child;
+            return const SizedBox.shrink();
+          },
+          errorBuilder: (_, __, ___) {
+            // The fallback is already visible underneath; remember the
+            // failure without rebuilding anything on screen.
+            CoverFailureCache.instance.markFailed(track.id, url);
+            return const SizedBox.shrink();
+          },
+        ),
+      ],
+    );
   }
 }

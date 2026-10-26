@@ -6,6 +6,7 @@ import '../../data/model/track.dart';
 import '../../services/track_downloader.dart';
 import '../../viewmodel/library_viewmodel.dart';
 import 'add_to_playlist_sheet.dart';
+import 'track_artwork.dart';
 
 /// Shows a context menu for a track.
 Future<void> showTrackContextMenu(
@@ -62,18 +63,12 @@ class _TrackContextMenu extends StatelessWidget {
               child: Row(
                 children: [
                   // Track icon
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: track.iconUrl.isNotEmpty
-                        ? Image.network(
-                            track.previewIconUrl,
-                            width: 56,
-                            height: 56,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                _DefaultIcon(colorScheme),
-                          )
-                        : _DefaultIcon(colorScheme),
+                  TrackArtwork(
+                    track: track,
+                    size: 56,
+                    radius: 8,
+                    compact: true,
+                    persistent: true,
                   ),
                   const SizedBox(width: 16),
                   // Track title and artist
@@ -188,7 +183,8 @@ class _TrackContextMenu extends StatelessWidget {
                   final isCached = snapshot.data ?? false;
                   return ListTile(
                     leading: Icon(
-                      isCached ? Icons.download_done : Icons.download,
+                      isCached ? Icons.push_pin : Icons.push_pin_outlined,
+                      color: isCached ? colorScheme.primary : null,
                     ),
                     title:
                         Text(isCached ? 'Remove from cache' : 'Cache offline'),
@@ -341,27 +337,6 @@ class _CacheProgressDialogState extends State<_CacheProgressDialog> {
             child: const Text('OK'),
           ),
       ],
-    );
-  }
-}
-
-class _DefaultIcon extends StatelessWidget {
-  final ColorScheme colorScheme;
-  const _DefaultIcon(this.colorScheme);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 56,
-      height: 56,
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Icon(
-        Icons.music_note,
-        color: colorScheme.onSurfaceVariant,
-      ),
     );
   }
 }

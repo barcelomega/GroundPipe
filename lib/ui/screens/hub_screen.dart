@@ -701,6 +701,7 @@ class _TrackRow extends StatelessWidget {
       index: index,
       skin: NgSkin.gold,
       iconUrl: track.aIconUrl,
+      track: track,
       title: track.title,
       genre: track.genre,
       artist: track.artist,

@@ -342,15 +342,15 @@ class RecommendationsViewModel extends ChangeNotifier {
     var next = nextUrl;
     while (page <= _maxFavoritePages) {
       if (generation != _generation) return ids;
-      final (pageIds, pageNext) = await _repo.getFavoriteAudioIdsPage(
+      final (pageTracks, pageNext) = await _repo.getFavoriteAudioIdsPage(
           username.split(':').last,
           page: page,
           url: next);
       currentPage = page;
       notifyListeners();
       final newIds = <String>[];
-      for (final id in pageIds) {
-        if (seen.add(id)) newIds.add(id);
+      for (final track in pageTracks) {
+        if (seen.add(track.id)) newIds.add(track.id);
       }
       ids.addAll(newIds);
       final capped = pageNext != null && page == _maxFavoritePages;
@@ -391,19 +391,19 @@ class RecommendationsViewModel extends ChangeNotifier {
     while (page <= _maxFavoritePages &&
         newIds.length < LocalDb.recommendationFavoriteLimit) {
       if (generation != _generation) return 0;
-      final (pageIds, pageNext) = await _repo
+      final (pageTracks, pageNext) = await _repo
           .getFavoriteAudioIdsPage(key.split(':').last, page: page, url: next);
       sawAnyPage = true;
-      if (pageIds.isNotEmpty) sawAnyId = true;
+      if (pageTracks.isNotEmpty) sawAnyId = true;
       currentPage = page;
       notifyListeners();
 
-      final scan = scanFavoritePage(pageIds, known);
+      final scan = scanFavoritePage(pageTracks, known);
       newIds.addAll(scan.added);
       if (newIds.length > LocalDb.recommendationFavoriteLimit) {
         newIds.removeRange(LocalDb.recommendationFavoriteLimit, newIds.length);
       }
-      if (scan.reachedOld || pageNext == null || pageIds.isEmpty) break;
+      if (scan.reachedOld || pageNext == null || pageTracks.isEmpty) break;
       next = pageNext;
       page++;
       await Future<void>.delayed(const Duration(seconds: 1));
@@ -433,16 +433,16 @@ class RecommendationsViewModel extends ChangeNotifier {
   /// newer tracks does not hide them.
   @visibleForTesting
   static ({List<String> added, bool reachedOld}) scanFavoritePage(
-      List<String> pageIds, Set<String> known) {
+      List<Track> pageTracks, Set<String> known) {
     final added = <String>[];
     var reachedOld = false;
-    for (final id in pageIds) {
-      if (known.contains(id)) {
+    for (final track in pageTracks) {
+      if (known.contains(track.id)) {
         reachedOld = true;
         continue;
       }
-      known.add(id);
-      added.add(id);
+      known.add(track.id);
+      added.add(track.id);
     }
     return (added: added, reachedOld: reachedOld);
   }

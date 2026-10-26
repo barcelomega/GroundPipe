@@ -3,8 +3,10 @@ package com.barcelomega.groundpipe.player
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -23,6 +25,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
 
+@UnstableApi
 class PlaybackService : MediaSessionService() {
 
     companion object {
@@ -51,6 +54,7 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var mediaCache: SimpleCache? = null
     private var liked = false
+    private var stretchProcessor: StretchAudioProcessor? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -85,7 +89,11 @@ class PlaybackService : MediaSessionService() {
             .setUpstreamDataSourceFactory(upstream)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
+        val processor = StretchAudioProcessor()
+        stretchProcessor = processor
+        
         val innerPlayer = ExoPlayer.Builder(this)
+            .setRenderersFactory(StretchRenderersFactory(this, processor))
             .setMediaSourceFactory(DefaultMediaSourceFactory(cacheFactory))
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -164,12 +172,24 @@ class PlaybackService : MediaSessionService() {
         mediaSession?.setMediaButtonPreferences(likePreferences(liked))
     }
 
+    fun setSpeed(speed: Float) {
+        Log.i("PlaybackService", "setSpeed($speed), processor=$stretchProcessor")
+        stretchProcessor?.setSpeed(speed)
+    }
+
+    fun setPitchShift(semitones: Float) {
+        Log.i("PlaybackService", "setPitchShift($semitones), processor=$stretchProcessor")
+        stretchProcessor?.setPitchShift(semitones)
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = mediaSession
 
     override fun onDestroy() {
         if (instance === this) instance = null
         mediaSession?.run { player.release(); release() }
         mediaSession = null
+        stretchProcessor?.reset()
+        stretchProcessor = null
         PlaybackCache.cache = null
         mediaCache?.release()
         mediaCache = null

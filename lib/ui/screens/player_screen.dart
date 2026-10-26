@@ -16,6 +16,7 @@ import '../theme/ng_theme.dart';
 import '../widgets/track_context_menu.dart';
 import '../widgets/ng_player.dart';
 import '../widgets/ng_retro.dart';
+import '../widgets/track_artwork.dart';
 import 'artist_screen.dart';
 import 'login_screen.dart';
 
@@ -2328,40 +2329,20 @@ class _QueueTrackItem extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             // Track icon
-            if (track.iconUrl.isNotEmpty)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(3),
-                child: Image.network(
-                  track.iconUrl,
-                  width: 40,
-                  height: 40,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
-                    width: 40,
-                    height: 40,
-                    color: ngWhite.withOpacity(0.05),
-                    child: Icon(
-                      Icons.music_note,
-                      color: ngWhite.withOpacity(0.3),
-                      size: 20,
-                    ),
-                  ),
-                ),
-              )
-            else
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: ngWhite.withOpacity(0.05),
-                  borderRadius: BorderRadius.circular(3),
-                ),
+            TrackArtwork(
+              track: track,
+              size: 40,
+              compact: true,
+              radius: 3,
+              fallback: Container(
+                color: ngWhite.withOpacity(0.05),
                 child: Icon(
                   Icons.music_note,
                   color: ngWhite.withOpacity(0.3),
                   size: 20,
                 ),
               ),
+            ),
             const SizedBox(width: 12),
             // Track info
             Expanded(

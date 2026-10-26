@@ -12,6 +12,7 @@ import '../../viewmodel/authors_viewmodel.dart';
 import '../widgets/author_actions.dart';
 import '../widgets/author_avatar.dart';
 import '../widgets/track_context_menu.dart';
+import 'artist_favorites_screen.dart';
 
 class ArtistScreen extends StatefulWidget {
   final String authorUrl;
@@ -107,6 +108,21 @@ class _ArtistScreenState extends State<ArtistScreen> {
               child: Text(_artistName.isEmpty ? 'Artist' : _artistName,
                   maxLines: 1, overflow: TextOverflow.ellipsis)),
         ]),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.favorite),
+            tooltip: 'View favorites',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      ArtistFavoritesScreen(authorUrl: widget.authorUrl),
+                ),
+              );
+            },
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(48),
           child: Align(

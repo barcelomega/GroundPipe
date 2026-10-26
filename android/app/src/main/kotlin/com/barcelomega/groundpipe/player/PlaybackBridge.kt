@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -33,6 +34,11 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainExecutor = Executor { cmd -> mainHandler.post(cmd) }
     private var positionRunnable: Runnable? = null
+
+    // Last requested values. Kept here so a request made before the playback
+    // service exists is applied once it connects (e.g. on a cold start).
+    private var speed = 1.0f
+    private var pitch = 0.0f
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -98,6 +104,18 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
                     PlaybackService.instance?.setLiked(isCurrentTrackLiked)
                     result.success(null)
                 }
+                "setSpeed" -> {
+                    speed = call.argument<Double>("speed")?.toFloat() ?: 1.0f
+                    Log.i("PlaybackBridge", "setSpeed($speed), service=${PlaybackService.instance}")
+                    PlaybackService.instance?.setSpeed(speed)
+                    result.success(null)
+                }
+                "setPitch" -> {
+                    pitch = call.argument<Double>("pitch")?.toFloat() ?: 0.0f
+                    Log.i("PlaybackBridge", "setPitch($pitch), service=${PlaybackService.instance}")
+                    PlaybackService.instance?.setPitchShift(pitch)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -111,6 +129,9 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
                 controller?.removeListener(playerListener)
                 controller = future.get()
                 controller?.addListener(playerListener)
+                // Apply any speed/pitch requested before the service was ready.
+                PlaybackService.instance?.setSpeed(speed)
+                PlaybackService.instance?.setPitchShift(pitch)
             } catch (_: Exception) {}
         }, mainExecutor)
     }

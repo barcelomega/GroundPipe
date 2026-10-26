@@ -255,13 +255,21 @@ class NgRepository {
   String _listingGenre(Element item) {
     final explicit = item.querySelector('.genre, [data-genre]');
     if (explicit != null) return explicit.text.trim();
-    // Newgrounds' mobile layout puts "Song - Genre" here instead of metadata dd.
-    final mobile = item.querySelector('.detail-description')?.text.trim() ?? '';
+    // Listings put "<Type> - <Genre>" in .notation (favorites/desktop) or
+    // .detail-description (mobile), separated by a hyphen or an em/en dash.
+    final label = (item.querySelector('.notation') ??
+                item.querySelector('.detail-description'))
+            ?.text
+            .trim() ??
+        '';
     final match = RegExp(
-            r'^(?:Song|Loop|Voice|Sound Effect|Podcast)\s+-\s*(.*)$',
+            r'^(?:Song|Loop|Voice|Sound Effect|Podcast)\s*[-–—]\s*(.*)$',
             caseSensitive: false)
-        .firstMatch(mobile);
-    if (match != null) return match.group(1)!.trim();
+        .firstMatch(label);
+    if (match != null) {
+      final genre = match.group(1)!.trim();
+      if (genre.isNotEmpty) return genre;
+    }
     for (final dd in item.querySelectorAll('.item-details-meta dd')) {
       final text = dd.text.trim();
       if (dd.querySelector('strong') != null ||
@@ -277,6 +285,8 @@ class NgRepository {
   static const _baseUrl = 'https://www.newgrounds.com';
   static const _userAgent =
       'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Mobile Safari/537.36';
+  static const _desktopUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
   Future<List<Track>> getFeaturedTracks({
     int offset = 0,
@@ -1464,8 +1474,28 @@ class NgRepository {
   }
 
   /// Reads one audio-favorites page and returns only track IDs and next URL.
-  (List<String>, String?) parseFavoriteAudioPage(String html) {
+  (List<Track>, String?) parseFavoriteAudioPage(String html) {
     final doc = htmlParser.parse(html);
+
+    // Parse favorites page using favorites-specific parser
+    final tracks = _parseFavoriteItems(doc);
+    
+    if (tracks.isNotEmpty) {
+      String? next;
+      for (final script in doc.querySelectorAll('script')) {
+        final text = script.text;
+        if (!text.contains('UsersFavoritesController.loadMore')) continue;
+        final normalized = text.replaceAll(r'\/', '/');
+        next = RegExp(r'https?://[^"\s]+/favorites/audio\?page=\d+')
+            .firstMatch(normalized)
+            ?.group(0)
+            ?.replaceAll(r'\/', '/');
+        if (next != null) break;
+      }
+      return (tracks, next);
+    }
+    
+    // Fallback: just extract IDs if the page structure is different
     final ids = <String>[];
     final seen = <String>{};
     for (final link in doc.querySelectorAll('a[href*="/audio/listen/"]')) {
@@ -1492,17 +1522,30 @@ class NgRepository {
           ?.replaceAll(r'\/', '/');
       if (next != null) break;
     }
-    return (ids, next);
+    
+    // Convert IDs to minimal tracks (should rarely happen)
+    final fallbackTracks = ids.map((id) => Track(
+      id: id,
+      title: 'Track $id',
+      artist: '',
+      genre: '',
+      iconUrl: '',
+      duration: 0,
+      audioType: 3,
+    )).toList();
+    
+    return (fallbackTracks, next);
   }
 
-  Future<(List<String>, String?)> getFavoriteAudioIdsPage(String username,
+  Future<(List<Track>, String?)> getFavoriteAudioIdsPage(String username,
       {int page = 1, String? url}) async {
     final origin = 'https://${Author.key(username)}.newgrounds.com';
     final target = url ??
         (page == 1
             ? '$origin/favorites/audio'
             : '$origin/favorites/audio?page=$page');
-    final response = await _fetch(target);
+    // Use desktop user agent to get full HTML with artist info
+    final response = await _fetch(target, desktop: true);
     if (response.statusCode != 200) {
       throw Exception('Could not load favorites for $username '
           '(HTTP ${response.statusCode})');
@@ -1517,9 +1560,9 @@ class NgRepository {
       }
       component = data['component'] as String;
     }
-    final (ids, next) = parseFavoriteAudioPage(component);
+    final (tracks, next) = parseFavoriteAudioPage(component);
     return (
-      ids,
+      tracks,
       next == null ? null : Uri.parse(target).resolve(next).toString()
     );
   }
@@ -2004,6 +2047,7 @@ class NgRepository {
   }
 
   void parseListenDetails(Track track, String html) {
+    print('[NgRepository] parseListenDetails called for track ${track.id}');
     try {
       final doc = htmlParser.parse(html);
       for (final el in doc.querySelectorAll('script, style, noscript')) {
@@ -2136,6 +2180,26 @@ class NgRepository {
         final text = cc.text.replaceAll(RegExp(r'\s+'), ' ').trim();
         if (text.isNotEmpty) track.license = text;
       }
+
+      // Parse peaks URL from NgAudioPlayer JSON
+      print('[NgRepository] Track ${track.id}: Searching for peaks URL in HTML...');
+      // Simple approach: find any audio_peaks URL ending with .listen.png
+      final peaksMatch = RegExp(
+        r'([^"\s]+audio_peaks[^"\s]+\.listen\.png)',
+      ).firstMatch(html);
+      if (peaksMatch != null) {
+        var rawUrl = peaksMatch.group(1);
+        // Handle escaped slashes
+        rawUrl = rawUrl?.replaceAll(r'\/', '/');
+        // Remove leading slashes if present
+        if (rawUrl?.startsWith('//') ?? false) {
+          rawUrl = 'https:$rawUrl';
+        }
+        track.peaksUrl = rawUrl;
+        print('[NgRepository] Track ${track.id}: Found peaks URL = ${track.peaksUrl}');
+      } else {
+        print('[NgRepository] Track ${track.id}: No peaks URL match in HTML');
+      }
     } catch (_) {}
   }
 
@@ -2171,12 +2235,14 @@ class NgRepository {
       final audioTypeStr = playback?.attributes['data-audio-type'] ?? '';
       final audioType = int.tryParse(audioTypeStr) ?? 3;
 
+      final genre = _listingGenre(a);
+
       result.add(Track(
         id: id,
         title: title,
         artist: artist,
-        genre: _listingGenre(a),
-        genreVerified: _listingGenre(a).isNotEmpty,
+        genre: genre,
+        genreVerified: genre.isNotEmpty,
         iconUrl: iconUrl,
         duration: duration,
         audioType: audioType,
@@ -2374,16 +2440,100 @@ class NgRepository {
     return result;
   }
 
-  static Map<String, String> _headers({String? cookie, String? referer}) => {
-        'User-Agent': _userAgent,
+  /// Parse favorites page items (desktop version has full artist info)
+  List<Track> _parseFavoriteItems(Document doc) {
+    final items = doc.querySelectorAll('ul.itemlist li');
+    final result = <Track>[];
+
+    for (final li in items) {
+      if (li.querySelector('div.audio-wrapper') == null) continue;
+      // Favorites use .item-audiosubmission-medium on mobile, but .item-audiosubmission on desktop
+      final submissionDiv = li.querySelector('div.item-audiosubmission-medium') ?? 
+                            li.querySelector('div.item-audiosubmission');
+      if (submissionDiv == null) continue;
+
+      final a = submissionDiv.querySelector('a.item-link') ?? 
+                submissionDiv.querySelector('a.item-audiosubmission');
+      if (a == null) continue;
+
+      final href = a.attributes['href'] ?? '';
+      final id = href.trimRight().split('/').last;
+      if (id.isEmpty) continue;
+
+      final fullTitle = (a.attributes['title'] ?? '').trim();
+      if (fullTitle.isEmpty) continue;
+
+      // Desktop version should have .detail-author or strong like search results
+      final artistElement =
+          li.querySelector('.detail-author') ?? li.querySelector('strong');
+      final artist = artistElement?.text.trim() ?? '';
+
+      // Try to find artist link (authorUrl)
+      String? authorUrl;
+      if (artistElement != null) {
+        final artistLink = artistElement.parent;
+        if (artistLink != null && artistLink.localName == 'a') {
+          authorUrl = artistLink.attributes['href'];
+        }
+      }
+
+      final actualTitle =
+          (fullTitle.contains(' - ') && fullTitle.startsWith(artist))
+              ? fullTitle.split(' - ').skip(1).join(' - ').trim()
+              : fullTitle;
+
+      final genre = _listingGenre(li);
+      final durationStr = li
+              .querySelector('[data-audio-duration]')
+              ?.attributes['data-audio-duration'] ??
+          '';
+      final duration = int.tryParse(durationStr) ?? 0;
+      final audioTypeStr = li
+              .querySelector('[data-audio-type]')
+              ?.attributes['data-audio-type'] ??
+          '';
+      final audioType = int.tryParse(audioTypeStr) ?? 3;
+
+      final iconUrl = _imgSrc(li.querySelector('img'));
+
+      // Parse rating from star-score element
+      String? score;
+      final starScoreEl = li.querySelector('.star-score');
+      if (starScoreEl != null) {
+        final titleAttr = starScoreEl.attributes['title'] ?? '';
+        // Title format: "Score: 4.90/5.00"
+        final scoreMatch = RegExp(r'Score:\s*(\d+\.\d+)').firstMatch(titleAttr);
+        if (scoreMatch != null) {
+          score = scoreMatch.group(1);
+        }
+      }
+
+      result.add(Track(
+        id: id,
+        title: actualTitle,
+        artist: artist,
+        genre: genre,
+        genreVerified: genre.isNotEmpty,
+        iconUrl: iconUrl,
+        duration: duration,
+        audioType: audioType,
+        score: score,
+        authorUrl: authorUrl,
+      ));
+    }
+    return result;
+  }
+
+  static Map<String, String> _headers({String? cookie, String? referer, bool desktop = false}) => {
+        'User-Agent': desktop ? _desktopUserAgent : _userAgent,
         'Accept':
             'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Upgrade-Insecure-Requests': '1',
         'sec-ch-ua':
             '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'sec-ch-ua-mobile': '?1',
-        'sec-ch-ua-platform': '"Android"',
+        'sec-ch-ua-mobile': desktop ? '?0' : '?1',
+        'sec-ch-ua-platform': desktop ? '"Windows"' : '"Android"',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': referer == null ? 'none' : 'same-origin',
@@ -2392,13 +2542,13 @@ class NgRepository {
         if (cookie != null && cookie.isNotEmpty) 'Cookie': cookie,
       };
 
-  Future<http.Response> _fetch(String url, {String? cookie}) async {
+  Future<http.Response> _fetch(String url, {String? cookie, bool desktop = false}) async {
     var target = Uri.parse(url);
     http.Response? response;
 
     for (var hop = 0; hop < 5; hop++) {
       final request = http.Request('GET', target)..followRedirects = false;
-      request.headers.addAll(_headers(cookie: cookie, referer: _baseUrl));
+      request.headers.addAll(_headers(cookie: cookie, referer: _baseUrl, desktop: desktop));
       response = await http.Response.fromStream(
         await request.send().timeout(const Duration(seconds: 20)),
       );
