@@ -23,13 +23,13 @@ class WaveformProgress extends StatefulWidget {
 
 class _WaveformProgressState extends State<WaveformProgress> {
   ui.Image? _waveformImage;
-  String? _lastPeaksUrl;
   int _loadGen = 0;
+  int _cacheRevision = 0;
 
   @override
   void initState() {
     super.initState();
-    _lastPeaksUrl = widget.track.peaksUrl;
+    _cacheRevision = WaveformImageCache.instance.revision;
     // Reopening the player for the same track reuses the decoded image, so
     // the waveform is painted on the first frame instead of flashing the
     // fallback slider while the PNG is read again.
@@ -40,11 +40,12 @@ class _WaveformProgressState extends State<WaveformProgress> {
   @override
   void didUpdateWidget(WaveformProgress oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Reload if track changed OR if peaksUrl became available/changed
-    final currentPeaksUrl = widget.track.peaksUrl;
-    if (oldWidget.track.id != widget.track.id ||
-        (_lastPeaksUrl != currentPeaksUrl && currentPeaksUrl != null)) {
-      _lastPeaksUrl = currentPeaksUrl;
+    // The cache owns URL resolution/retries. Metadata updates must not start
+    // a competing load or invalidate an already decoded image.
+    final revision = WaveformImageCache.instance.revision;
+    if (oldWidget.track.id != widget.track.id || _cacheRevision != revision) {
+      _cacheRevision = revision;
+      ++_loadGen;
       final previous = _waveformImage;
       _waveformImage = WaveformImageCache.instance.known(widget.track.id);
       previous?.dispose();
@@ -81,34 +82,34 @@ class _WaveformProgressState extends State<WaveformProgress> {
     // Show waveform if loaded, otherwise show fallback slider
     if (_waveformImage != null) {
       return GestureDetector(
-      onTapDown: (details) {
-        if (widget.onSeek == null) return;
-        final box = context.findRenderObject() as RenderBox?;
-        if (box == null) return;
-        final localX = details.localPosition.dx;
-        final progress = (localX / box.size.width).clamp(0.0, 1.0);
-        widget.onSeek!(progress);
-      },
-      onHorizontalDragUpdate: (details) {
-        if (widget.onSeek == null) return;
-        final box = context.findRenderObject() as RenderBox?;
-        if (box == null) return;
-        final localX = details.localPosition.dx;
-        final progress = (localX / box.size.width).clamp(0.0, 1.0);
-        widget.onSeek!(progress);
-      },
-      child: CustomPaint(
-        painter: _WaveformPainter(
-          image: _waveformImage!,
-          progress: widget.progress.clamp(0.0, 1.0),
-          activeColor: colorScheme.primary,
-          inactiveColor: colorScheme.onSurfaceVariant.withOpacity(0.3),
+        onTapDown: (details) {
+          if (widget.onSeek == null) return;
+          final box = context.findRenderObject() as RenderBox?;
+          if (box == null) return;
+          final localX = details.localPosition.dx;
+          final progress = (localX / box.size.width).clamp(0.0, 1.0);
+          widget.onSeek!(progress);
+        },
+        onHorizontalDragUpdate: (details) {
+          if (widget.onSeek == null) return;
+          final box = context.findRenderObject() as RenderBox?;
+          if (box == null) return;
+          final localX = details.localPosition.dx;
+          final progress = (localX / box.size.width).clamp(0.0, 1.0);
+          widget.onSeek!(progress);
+        },
+        child: CustomPaint(
+          painter: _WaveformPainter(
+            image: _waveformImage!,
+            progress: widget.progress.clamp(0.0, 1.0),
+            activeColor: colorScheme.primary,
+            inactiveColor: colorScheme.onSurfaceVariant.withOpacity(0.3),
+          ),
+          size: const Size(double.infinity, 48),
         ),
-        size: const Size(double.infinity, 48),
-      ),
-    );
+      );
     }
-    
+
     // Fallback slider (shown while loading or on error)
     return SliderTheme(
       data: SliderTheme.of(context).copyWith(

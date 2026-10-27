@@ -2,13 +2,17 @@ package com.barcelomega.groundpipe.player
 
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.ln
 
 @UnstableApi
-class StretchAudioProcessor : AudioProcessor {
+class StretchAudioProcessor(
+    private val createEngine: () -> StretchEngine = { AudioStretchProcessor() }
+) : AudioProcessor {
     companion object {
         private const val TAG = "StretchAudioProcessor"
     }
@@ -17,33 +21,51 @@ class StretchAudioProcessor : AudioProcessor {
     private var outputAudioFormat = AudioProcessor.AudioFormat.NOT_SET
     private var buffer = AudioProcessor.EMPTY_BUFFER
     private var isActive = false
-    private var pendingInputAudioFormat = AudioProcessor.AudioFormat.NOT_SET
     private var isEndOfStream = false
 
-    private var stretchProcessor: AudioStretchProcessor? = null
+    private var stretchProcessor: StretchEngine? = null
     private var speed = 1.0f
     private var pitchShift = 0.0f
+    private var inputFramesProcessed = 0L
+    private var outputFramesProduced = 0L
+    private var outputFrameRemainder = 0.0
     
     private var inputBuffer = FloatArray(0)
     private var outputBuffer = FloatArray(0)
 
-    fun setSpeed(speed: Float) {
-        this.speed = speed
+    fun applyPlaybackParameters(parameters: PlaybackParameters): PlaybackParameters {
         ensureProcessor()
+        val applied = if (stretchProcessor != null) {
+            PlaybackParameters(
+                parameters.speed.coerceIn(0.2f, 3.0f),
+                parameters.pitch.coerceIn(0.5f, 2.0f)
+            )
+        } else {
+            PlaybackParameters.DEFAULT
+        }
+        speed = applied.speed
+        pitchShift = (12.0 * ln(applied.pitch.toDouble()) / ln(2.0)).toFloat()
         stretchProcessor?.setSpeed(speed)
-        Log.i(TAG, "setSpeed($speed), processor=$stretchProcessor")
+        stretchProcessor?.setPitchShift(pitchShift)
+        return applied
     }
 
-    fun setPitchShift(semitones: Float) {
-        this.pitchShift = semitones
-        ensureProcessor()
-        stretchProcessor?.setPitchShift(semitones)
-        Log.i(TAG, "setPitchShift($semitones), processor=$stretchProcessor")
+    fun getMediaDuration(playoutDuration: Long): Long {
+        return if (outputFramesProduced > 0L) {
+            (playoutDuration.toDouble() * inputFramesProcessed / outputFramesProduced).toLong()
+        } else {
+            (playoutDuration.toDouble() * speed).toLong()
+        }
+    }
+
+    private fun recordFrames(input: Int, output: Int) {
+        inputFramesProcessed += input
+        outputFramesProduced += output
     }
     
     private fun ensureProcessor() {
         if (stretchProcessor == null) {
-            val processor = AudioStretchProcessor()
+            val processor = createEngine()
             if (processor.isInitialized()) {
                 // Default to 48kHz stereo until configure is called
                 val sampleRate = if (inputAudioFormat.sampleRate > 0) inputAudioFormat.sampleRate else 48000
@@ -64,14 +86,14 @@ class StretchAudioProcessor : AudioProcessor {
             throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
         }
 
-        pendingInputAudioFormat = inputAudioFormat
         this.inputAudioFormat = inputAudioFormat
         // Return 16-bit PCM to keep compatibility with other processors
         this.outputAudioFormat = inputAudioFormat
         
         // Recreate processor with actual audio format
         stretchProcessor?.release()
-        val processor = AudioStretchProcessor()
+        stretchProcessor = null
+        val processor = createEngine()
         if (processor.isInitialized()) {
             processor.configure(inputAudioFormat.sampleRate, inputAudioFormat.channelCount)
             processor.setSpeed(speed)
@@ -111,6 +133,8 @@ class StretchAudioProcessor : AudioProcessor {
             buffer.clear()
             buffer.put(inputBuffer)
             buffer.flip()
+            val frames = size / (2 * inputAudioFormat.channelCount)
+            recordFrames(frames, frames)
             return
         }
         
@@ -122,6 +146,8 @@ class StretchAudioProcessor : AudioProcessor {
             buffer.clear()
             buffer.put(inputBuffer)
             buffer.flip()
+            val frames = size / (2 * inputAudioFormat.channelCount)
+            recordFrames(frames, frames)
             return
         }
 
@@ -137,14 +163,19 @@ class StretchAudioProcessor : AudioProcessor {
         }
 
         // Convert 16-bit PCM to float [-1.0, 1.0]
+        val inputStart = inputBuffer.position()
         val shortBuffer = inputBuffer.asShortBuffer()
         for (i in 0 until totalSamples) {
             this.inputBuffer[i] = shortBuffer.get() / 32768.0f
         }
         inputBuffer.position(inputBuffer.position() + totalSamples * 2)
 
-        // Calculate output frame count based on speed
-        val outputFrameCount = (frameCount / speed).toInt() + 128 // Extra frames for safety
+        // These frames are actual audio, not spare allocation capacity. Adding
+        // padding here changes both the audible tempo and the reported time.
+        // Carry fractional frames so rounding cannot accumulate across buffers.
+        val exactOutputFrames = frameCount / speed.toDouble() + outputFrameRemainder
+        val outputFrameCount = exactOutputFrames.toInt()
+        outputFrameRemainder = exactOutputFrames - outputFrameCount
         val outputSamples = outputFrameCount * inputAudioFormat.channelCount
         
         if (outputBuffer.size < outputSamples) {
@@ -170,8 +201,20 @@ class StretchAudioProcessor : AudioProcessor {
                 outShortBuffer.put(sample.toShort())
             }
             buffer.limit(outputByteCount)
+            recordFrames(frameCount, outputFrameCount)
         } catch (e: Exception) {
             Log.e(TAG, "Error processing audio", e)
+            // Preserve the input and its time mapping if a buffer cannot be
+            // stretched. Never return stale output from the previous buffer.
+            inputBuffer.position(inputStart)
+            if (buffer.capacity() < size) {
+                buffer = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder())
+            }
+            buffer.clear()
+            buffer.put(inputBuffer)
+            buffer.flip()
+            recordFrames(frameCount, frameCount)
+            outputFrameRemainder = 0.0
         }
     }
 
@@ -197,6 +240,9 @@ class StretchAudioProcessor : AudioProcessor {
         Log.d(TAG, "flush called")
         buffer = AudioProcessor.EMPTY_BUFFER
         isEndOfStream = false
+        inputFramesProcessed = 0L
+        outputFramesProduced = 0L
+        outputFrameRemainder = 0.0
         stretchProcessor?.reset()
     }
 
@@ -206,41 +252,8 @@ class StretchAudioProcessor : AudioProcessor {
         stretchProcessor = null
         inputAudioFormat = AudioProcessor.AudioFormat.NOT_SET
         outputAudioFormat = AudioProcessor.AudioFormat.NOT_SET
-        pendingInputAudioFormat = AudioProcessor.AudioFormat.NOT_SET
         isActive = false
         isEndOfStream = false
     }
 
-    fun onStreamStarted() {
-        Log.i(TAG, "onStreamStarted: pending=$pendingInputAudioFormat, current=$inputAudioFormat")
-        if (pendingInputAudioFormat != AudioProcessor.AudioFormat.NOT_SET && 
-            pendingInputAudioFormat != inputAudioFormat) {
-            
-            inputAudioFormat = pendingInputAudioFormat
-            // Keep 16-bit PCM format
-            outputAudioFormat = inputAudioFormat
-
-            // Always create processor, check speed/pitch in process()
-            try {
-                stretchProcessor?.release()
-                val processor = AudioStretchProcessor()
-                if (processor.isInitialized()) {
-                    processor.apply {
-                        configure(inputAudioFormat.sampleRate, inputAudioFormat.channelCount)
-                        setSpeed(speed)
-                        setPitchShift(pitchShift)
-                    }
-                    stretchProcessor = processor
-                    isActive = true
-                    Log.i(TAG, "Processor configured: ${inputAudioFormat.sampleRate}Hz, ${inputAudioFormat.channelCount}ch, speed=$speed, pitch=$pitchShift")
-                } else {
-                    Log.w(TAG, "Native processor not initialized, passthrough mode")
-                    isActive = false
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to initialize audio processor", e)
-                isActive = false
-            }
-        }
-    }
 }

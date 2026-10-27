@@ -30,13 +30,15 @@ class AuthorActions extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        TextButton.icon(
+        IconButton(
+          tooltip: state.subscribed ? 'Unsubscribe' : 'Subscribe',
+          color:
+              state.subscribed ? Theme.of(context).colorScheme.primary : null,
           onPressed: enabled
               ? () => change(() => vm.setSubscribed(author, !state.subscribed))
               : null,
           icon:
               Icon(state.subscribed ? Icons.check : Icons.person_add_outlined),
-          label: Text(state.subscribed ? 'Subscribed' : 'Subscribe'),
         ),
         IconButton(
           tooltip: state.blocked ? 'Unblock author' : 'Block author',

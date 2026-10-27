@@ -11,6 +11,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
@@ -31,6 +32,8 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
 
     private var eventSink: EventChannel.EventSink? = null
     private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var released = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val mainExecutor = Executor { cmd -> mainHandler.post(cmd) }
     private var positionRunnable: Runnable? = null
@@ -122,9 +125,12 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
     }
 
     private fun connectController() {
+        if (released || controllerFuture != null) return
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
+        controllerFuture = future
         future.addListener({
+            if (released || controllerFuture !== future) return@addListener
             try {
                 controller?.removeListener(playerListener)
                 controller = future.get()
@@ -132,7 +138,9 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
                 // Apply any speed/pitch requested before the service was ready.
                 PlaybackService.instance?.setSpeed(speed)
                 PlaybackService.instance?.setPitchShift(pitch)
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                controllerFuture = null
+            }
         }, mainExecutor)
     }
 
@@ -189,9 +197,16 @@ class PlaybackBridge(private val context: Context, messenger: BinaryMessenger) {
     }
 
     fun release() {
-        instance = null
+        if (released) return
+        released = true
+        if (instance === this) instance = null
         stopPositionUpdates()
+        methodChannel.setMethodCallHandler(null)
+        eventChannel.setStreamHandler(null)
+        eventSink = null
         controller?.removeListener(playerListener)
+        controllerFuture?.let { MediaController.releaseFuture(it) }
+        controllerFuture = null
         controller = null
     }
 }

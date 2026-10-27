@@ -629,14 +629,12 @@ class NgViewModel extends ChangeNotifier {
     isLoadingTrack = true;
     playError = null;
     _lastCompletedId = null;
-    notifyListeners();
 
-    // Only the current track's waveform is kept. Drop the previous one as
-    // soon as playback moves on; the new peaks are fetched when the player
-    // actually needs them.
-    WaveformImageCache.instance.keepOnly(track.id);
+    // Waveform loading is independent of the MP3 source and starts before
+    // notifying the player. Widgets join this same request when opened.
+    unawaited(WaveformImageCache.instance.prepare(track));
     CoverFailureCache.instance.keepOnly(track.id);
-    unawaited(CacheManager.instance.keepOnlyWaveform(track.id));
+    notifyListeners();
 
     try {
       await audioHandler.stop();

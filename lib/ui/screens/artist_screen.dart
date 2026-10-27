@@ -122,14 +122,8 @@ class _ArtistScreenState extends State<ArtistScreen> {
               );
             },
           ),
+          AuthorActions(author: author),
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(48),
-          child: Align(
-            alignment: Alignment.centerRight,
-            child: AuthorActions(author: author),
-          ),
-        ),
       ),
       body: blocked
           ? const Center(

@@ -49,6 +49,37 @@ class AuthorFavoritesCount {
 class NgRepository {
   static const _memoryCacheMaxEntries = 2048;
   static final _authorAvatars = LinkedHashMap<String, Future<String?>>();
+  static final _listenPageLoads = <String, Future<String>>{};
+
+  // Playback and waveform loading can need the same HTML concurrently.
+  // Share only in-flight requests, not a growing cache of listen pages.
+  Future<String> _listenPage(String trackId) {
+    return _listenPageLoads.putIfAbsent(trackId, () {
+      return _connectRaw('$_baseUrl/audio/listen/$trackId')
+          .timeout(const Duration(seconds: 25))
+          .whenComplete(() {
+        _listenPageLoads.remove(trackId);
+      });
+    });
+  }
+
+  Future<String?> getWaveformUrl(Track track, {bool refresh = false}) async {
+    if (!refresh && track.peaksUrl?.isNotEmpty == true) return track.peaksUrl;
+    final html = await _listenPage(track.id);
+    enrichFromHtml(track, html);
+    // Extract independently of other metadata, and don't retain a stale URL
+    // when a refreshed page no longer supplies a waveform.
+    return track.peaksUrl = parseWaveformUrl(html);
+  }
+
+  static String? parseWaveformUrl(String html) {
+    final match = RegExp(
+      r'''(?:https?:)?//img\.ngfiles\.com/audio_peaks/[^"'\s<>]+\.listen\.png(?:\?[^"'\s<>]*)?''',
+    ).firstMatch(html.replaceAll(r'\/', '/'));
+    if (match == null) return null;
+    final url = match.group(0)!.replaceAll('&amp;', '&');
+    return url.startsWith('//') ? 'https:$url' : url;
+  }
 
   static void _touchMemoryCache<K, V>(LinkedHashMap<K, V> cache, K key) {
     final value = cache.remove(key);
@@ -433,7 +464,7 @@ class NgRepository {
 
   Future<void> enrichTrack(Track track) async {
     try {
-      final html = await _connectRaw('$_baseUrl/audio/listen/${track.id}');
+      final html = await _listenPage(track.id);
       enrichFromHtml(track, html);
     } catch (_) {}
   }
@@ -2181,25 +2212,7 @@ class NgRepository {
         if (text.isNotEmpty) track.license = text;
       }
 
-      // Parse peaks URL from NgAudioPlayer JSON
-      print('[NgRepository] Track ${track.id}: Searching for peaks URL in HTML...');
-      // Simple approach: find any audio_peaks URL ending with .listen.png
-      final peaksMatch = RegExp(
-        r'([^"\s]+audio_peaks[^"\s]+\.listen\.png)',
-      ).firstMatch(html);
-      if (peaksMatch != null) {
-        var rawUrl = peaksMatch.group(1);
-        // Handle escaped slashes
-        rawUrl = rawUrl?.replaceAll(r'\/', '/');
-        // Remove leading slashes if present
-        if (rawUrl?.startsWith('//') ?? false) {
-          rawUrl = 'https:$rawUrl';
-        }
-        track.peaksUrl = rawUrl;
-        print('[NgRepository] Track ${track.id}: Found peaks URL = ${track.peaksUrl}');
-      } else {
-        print('[NgRepository] Track ${track.id}: No peaks URL match in HTML');
-      }
+      track.peaksUrl = parseWaveformUrl(html) ?? track.peaksUrl;
     } catch (_) {}
   }
 

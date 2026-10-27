@@ -2,7 +2,18 @@ package com.barcelomega.groundpipe.player
 
 import android.util.Log
 
-class AudioStretchProcessor {
+/** Native stretch operations, separate from the Media3 buffer/timing contract. */
+interface StretchEngine {
+    fun isInitialized(): Boolean
+    fun release()
+    fun configure(sampleRate: Int, channels: Int)
+    fun setSpeed(speed: Float)
+    fun setPitchShift(semitones: Float)
+    fun reset()
+    fun process(input: FloatArray, output: FloatArray, inputFrames: Int, outputFrames: Int)
+}
+
+class AudioStretchProcessor : StretchEngine {
     companion object {
         private const val TAG = "AudioStretchProcessor"
         private var libraryLoaded = false
@@ -31,31 +42,31 @@ class AudioStretchProcessor {
         }
     }
     
-    fun isInitialized(): Boolean = initialized
+    override fun isInitialized(): Boolean = initialized
     
-    fun release() {
+    override fun release() {
         nativeRelease()
     }
     
-    fun configure(sampleRate: Int, channels: Int) {
+    override fun configure(sampleRate: Int, channels: Int) {
         nativeConfigure(sampleRate, channels)
     }
     
-    fun setSpeed(speed: Float) {
+    override fun setSpeed(speed: Float) {
         Log.i(TAG, "setSpeed($speed)")
         nativeSetSpeed(speed)
     }
     
-    fun setPitchShift(semitones: Float) {
+    override fun setPitchShift(semitones: Float) {
         Log.i(TAG, "setPitchShift($semitones)")
         nativeSetPitchShift(semitones)
     }
     
-    fun reset() {
+    override fun reset() {
         nativeReset()
     }
     
-    fun process(input: FloatArray, output: FloatArray, inputFrames: Int, outputFrames: Int) {
+    override fun process(input: FloatArray, output: FloatArray, inputFrames: Int, outputFrames: Int) {
         nativeProcess(input, output, inputFrames, outputFrames)
     }
     

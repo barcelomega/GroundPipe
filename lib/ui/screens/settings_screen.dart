@@ -55,7 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Version 1.3.0+5',
+                  'Version 1.3.1+6',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colorScheme.onPrimaryContainer.withOpacity(0.7),
                   ),
@@ -149,7 +149,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       // Collect all data
       final data = <String, dynamic>{
-        'version': '1.3.0+5',
+        'version': '1.3.1+6',
         'exportDate': DateTime.now().toIso8601String(),
         'playlists': await _getAllPlaylists(db),
         'likes': await _getLikes(db),
